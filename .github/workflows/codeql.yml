@@ -27,3 +27,7 @@ jobs:
         with:
           languages: go
       - uses: github/codeql-action/analyze@v4
+        # Private-repo runs hit an Advanced Security paywall on upload.
+        # Treat the analyze step as advisory until the repo is public or
+        # Advanced Security is enabled.
+        continue-on-error: true
