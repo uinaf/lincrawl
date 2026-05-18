@@ -36,7 +36,6 @@ example — belongs in tenant-controlled stores, not in this repository.
 
 ## Tenant-controlled store
 
-The tenant-controlled tenant store for `lincrawl` lives in
-[`<tenant-store>`](https://github.com/<tenant-store>).
-That repository owns runbooks, manifest metadata, and any encrypted
-snapshots; this repository owns the generic CLI shape.
+Tenant-specific state — live archive, encrypted snapshots, manifests,
+operator runbooks — belongs in a separate, tenant-owned store
+repository, not here. This repository owns the generic CLI shape only.

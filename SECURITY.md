@@ -15,8 +15,8 @@ concepts that depend on tenant secrets.
   environment, never in committed files or shell history.
 - Tenant runtime state, encrypted snapshots, and exports belong outside this
   repository, in a tenant-controlled store.
-- Pre-flight `op whoami --account=<your-account>` before pulling
-  secrets through 1Password; surface missing auth instead of retrying.
+- Pre-flight `op whoami --account=<your-account>` before pulling secrets
+  through 1Password; surface missing auth instead of retrying.
 
 ## Boundary
 

@@ -65,14 +65,15 @@ for the SQLite open/PRAGMA/schema-version/read-only primitives.
 - No undocumented endpoints or rate-limit bypass.
 - No real Linear data, workspace IDs, issue bodies, comments, labels, or
   exports in this repo.
-- Tenant-specific operating state belongs in the tenant-controlled crawl store
-  (`<tenant-store>`), not here.
+- Tenant-specific operating state (live archive, encrypted snapshots,
+  manifests, runbooks) belongs in a tenant-controlled store repository,
+  not here.
 
 ## Local secrets
 
-Locally, prefer the user's 1Password CLI integration. Verify with
-`op whoami --account=<your-account>`. This repo's verify works without
-secrets; pull credentials only when running live sync.
+Locally, prefer your 1Password CLI integration (`op whoami --account=<your-account>`).
+This repo's verify works without secrets; pull credentials only when running
+live sync.
 
 ## Agent DX surfaces
 

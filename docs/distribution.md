@@ -73,5 +73,5 @@ not destructive.
 ## Tenant boundary on release
 
 The release pipeline never reads `LINEAR_API_KEY`. Artifacts are pure
-build output. Tenant data lives in `<tenant-store>`, not
-here.
+build output. Tenant data belongs in a tenant-controlled store
+repository, not here.

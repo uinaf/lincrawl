@@ -99,6 +99,14 @@ See [`.env.example`](.env.example) for the full set.
 CI runs `verify` on every PR and push. Tagged releases (`v0.0.x`) come
 from `main` via semantic-release + GoReleaser; see [Distribution](docs/distribution.md).
 
+## Acknowledgements
+
+Built on [`openclaw/crawlkit`](https://github.com/openclaw/crawlkit) for
+the SQLite open / PRAGMA cocktail / schema-version / read-only / state
+primitives. The CLI surface, agent-DX shape, structured error envelope,
+and release pipeline mirror conventions from sibling crawlers in the
+[`openclaw`](https://github.com/openclaw) family.
+
 ## License
 
 MIT. See [License](LICENSE).
