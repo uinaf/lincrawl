@@ -61,6 +61,7 @@ JSON by default everywhere. Errors are JSON envelopes on stderr.
 | `show <id-or-identifier>` | Resolve one issue by UUID or `TEAM-N`; supports `--fields` |
 | `query --graphql … --vars …` | Pass-through to the Linear GraphQL API for raw queries |
 | `export --out <path>` | Canonical NDJSON dump of the local archive; `--out` is sandboxed to CWD |
+| `guard` | Scan the working tree for tenant leaks, plaintext archives, secrets |
 | `version` | Build version, commit, date |
 
 Round-trip via NDJSON:
@@ -91,8 +92,12 @@ See [`.env.example`](.env.example) for the full set.
 ## Verification
 
 ```bash
-./scripts/verify
+./scripts/verify           # tidy, vet, test, race, smoke, guard, release-check, whitespace
+./scripts/local-live-smoke # opt-in bounded live Linear proof, env-gated
 ```
+
+CI runs `verify` on every PR and push. Tagged releases (`v0.0.x`) come
+from `main` via semantic-release + GoReleaser; see [Distribution](docs/distribution.md).
 
 ## License
 

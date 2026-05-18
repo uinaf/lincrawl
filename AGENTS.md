@@ -40,12 +40,22 @@ internal/cli/          command parsing, JSON output, errors, field masks,
                        input validation, output-path sandbox
 internal/config/       env + local config loading with redaction
 internal/buildinfo/    version/commit/date strings (overridden by ldflags)
-internal/linear/       entity types, fixture loader, GraphQL client
-internal/store/        SQLite + FTS5 + ingest + export + stream ingest
+internal/linear/       entity types, fixture loader, GraphQL client with
+                       typed errors + Retry-After + injectable Sleep/Now
+internal/store/        crawlkit-backed SQLite + FTS5 + ingest + export +
+                       content_hash short-circuit + raw_blobs table
 internal/syncer/       fixture / entity / exact / tail / streaming sync
+                       with overlap window + wall-clock budget +
+                       stall guards
+internal/lock/         file lock (<db>.lock O_EXCL) for sync runs
+internal/guard/        working-tree scan (.gitignore-aware) for tenant
+                       leaks, plaintext archives, secrets, op:// refs
 testdata/synthetic/    deterministic fixture issues/comments/labels
 skills/lincrawl/       agent skill (YAML frontmatter + workflows)
 ```
+
+Built on [`github.com/openclaw/crawlkit`](https://github.com/openclaw/crawlkit)
+for the SQLite open/PRAGMA/schema-version/read-only primitives.
 
 `CLAUDE.md` is a symlink to this file; keep one authored agent guide.
 
@@ -67,15 +77,21 @@ secrets; pull credentials only when running live sync.
 ## Agent DX surfaces
 
 - `lincrawl describe --json` returns the full machine-readable surface:
-  per-command args (name, type, required), per-flag (name, type, required,
-  default, help), `mutually_exclusive` flag groups, the exit-code table
-  (`ok` 0, `internal` 1, `usage` 2, `not_found` 3, `validation` 4,
-  `config` 5), and the field-mask vocabulary for `show`, `search`, and
+  `schema_version: "lincrawl.cli.v1"`, per-command args (name, type,
+  required), per-flag (name, type, required, default, help),
+  `mutually_exclusive` flag groups, `mutates` boolean for side-effect
+  classification, `examples[]` and `notes[]` per command, the exit-code
+  table (`ok` 0, `internal` 1, `usage` 2, `not_found` 3, `validation`
+  4, `config` 5), and the field-mask vocabulary for `show`, `search`,
   `status`.
+- `lincrawl describe <command> --json` returns just one command's
+  schema for cheap agent introspection.
 - Every command defaults to `--json`. NDJSON streaming is available on
   `search` (per row) and on `sync --updated-since` (per ingested issue).
 - Errors are JSON on stderr: `{"code","exit","message"}`. Use the `exit`
   field, not the raw process exit status, to classify failures.
+- `lincrawl guard --json` scans the working tree before commit; honors
+  `.gitignore` in git checkouts.
 - `--fields a,b,c` works on `show`, `search`, and `status`. Unknown fields
   produce a `validation` error listing the known fields. Always pass
   `--fields` from your skill prompt to cap token spend.

@@ -53,37 +53,78 @@ and the field-mask vocabulary for `show`, `search`, and `status`.
 
 ```text
 cmd/lincrawl/          CLI entrypoint (main is one line)
-internal/cli/          Kong command tree, JSON output, errors, field masks,
-                       input validation, output-path sandbox
-internal/config/       env + .env.local loading with redacted presence flags
-internal/buildinfo/    version/commit/date strings (overridden via -ldflags)
-internal/linear/       Linear entity types, fixture loader, GraphQL client
-                       (typed queries + paginate helper)
-internal/store/        SQLite schema + FTS5 + idempotent ingest +
-                       search/show/export + NDJSON-or-Snapshot ingest stream
-internal/syncer/       Fixture, entity, exact, tail, and streaming sync
-                       orchestration with cursor persistence
+internal/cli/          Kong command tree, JSON output, classified
+                       errors, field masks, input validation,
+                       output-path sandbox (symlink-resolved)
+internal/config/       env + .env.local loading with redacted presence
+                       flags
+internal/buildinfo/    version/commit/date strings (overridden via
+                       -ldflags during GoReleaser build)
+internal/linear/       entity types, fixture loader, GraphQL client
+                       with typed errors (RateLimited / Auth / NotFound
+                       / APIError), Retry-After + jittered backoff,
+                       injectable Sleep/Now, paginate helper
+internal/store/        crawlkit-backed SQLite (WAL + busy_timeout +
+                       mmap_size + schema_migrations) + FTS5 (bm25
+                       weighted) + idempotent ingest with content_hash
+                       short-circuit + raw_blobs table + NDJSON-or-
+                       Snapshot ingest stream + read-only open variant
+internal/syncer/       fixture / entity / exact / tail / streaming
+                       sync with 60s overlap window, wall-clock budget,
+                       cursor-stall + empty-page-with-hasNext guards,
+                       cursor persistence
+internal/lock/         file lock (<db>.lock O_EXCL) for concurrent
+                       sync runs
+internal/guard/        working-tree scan honoring .gitignore; rejects
+                       tenant leaks, plaintext archives, real op://
+                       references, Linear tokens, Linear URLs / UUIDs
 testdata/synthetic/    snapshot.json fixtures for deterministic tests
-skills/lincrawl/       Agent skill (YAML frontmatter + workflows)
+skills/lincrawl/       agent skill (YAML frontmatter + workflows)
 ```
+
+Built on [`github.com/openclaw/crawlkit`](https://github.com/openclaw/crawlkit)
+v0.6.0 for the SQLite open/PRAGMA/schema-version/read-only primitives.
 
 ## Store
 
 The local SQLite archive is the source of truth for what lincrawl has seen.
-Files are created at `0600`, the parent directory at `0700`, so the archive
-is not world-readable on shared machines. Schema:
+crawlkit opens it with WAL + synchronous=NORMAL + temp_store=MEMORY +
+mmap_size=256MB + busy_timeout=5000; files are created at `0600`, the
+parent directory at `0700`, so the archive is not world-readable on
+shared machines. Schema:
 
+- `schema_migrations(version)` — refuses to open if the db's version
+  exceeds the supported version.
 - `teams`, `workflow_states`, `users`, `labels`, `projects`
 - `issues` with foreign keys to `teams`, `projects`, `workflow_states`,
-  `users` (assignee, creator). Missing references are stub-inserted on
-  ingest so a sparse entity pull does not block issue ingest.
-- `issue_labels` join table — purged and rebuilt per issue on every refresh
-- `comments` — also purged and rebuilt per issue on refresh, so deleted
-  upstream comments disappear locally
-- `issue_fts` FTS5 mirror over `identifier`, `title`, `description`, and
-  concatenated comment bodies, with `bm25` ordering and snippet markers
-- `sync_state(scope, cursor, high_water_mark, updated_at)` — `issues.tail`
-  scope persists the live tail-sync cursor for `sync --resume`
+  `users` (assignee, creator), plus a `content_hash` column. Missing
+  references are stub-inserted on ingest so a sparse entity pull does
+  not block issue ingest. Re-ingesting an unchanged issue (same
+  content_hash) short-circuits before touching the upsert or FTS path.
+- `issue_labels` join table — purged and rebuilt per issue on every
+  refresh.
+- `comments` — purged and rebuilt per issue on refresh, so deleted
+  upstream comments disappear locally.
+- `issue_fts` FTS5 mirror over `identifier`, `title`, `description`,
+  and concatenated comment bodies. `bm25` weighted `(0, 10, 5, 1)` so
+  title hits dominate. `SafeSnippet` sanitizes control chars and byte-
+  budgets the output.
+- Composite indexes: `issues(team_id, updated_at desc)`,
+  `issues(state_id, updated_at desc)`,
+  `issues(assignee_id, updated_at desc)`,
+  `issues(project_id, updated_at desc)`,
+  `comments(issue_id, created_at, id)`.
+- `raw_blobs(sha256, kind, entity_id, payload, ingested_at)` — table
+  reserved for raw provider payload retention (replay/backfill from
+  disk without re-crawling). Not populated yet; live sync currently
+  retains only the typed Snapshot.
+- `sync_state(source_name, entity_type, entity_id, value, updated_at)`
+  — crawlkit/state composite-key schema; `linear/issues_tail/default`
+  persists the live tail-sync cursor for `sync --resume`. `SaveCursor`/
+  `LoadCursor` wrap it for API stability.
+
+`OpenReadOnly` is used by `search`, `show`, `status`, and `export` so
+they never contend with a concurrent writer holding the WAL.
 
 Search uses FTS5 with `bm25` ordering, snippet markers, and a configurable
 limit. User queries are wrapped as FTS5 phrases by default (`--raw` opts
@@ -100,6 +141,9 @@ without loss.
 
 ## Sync
 
+Every sync mode runs under a `<db>.lock` file lock so two `lincrawl
+sync` invocations cannot race on the same archive.
+
 - **Fixture sync** loads `testdata/synthetic/snapshot.json` (or any
   `*.snapshot.json` file under a fixture directory). It validates
   referential integrity at parse time so fixture typos fail fast.
@@ -109,20 +153,28 @@ without loss.
   workflow states, users, labels, and projects via a shared paginator.
 - **Live tail sync** (`sync --updated-since <ts|24h|7d>`) issues
   `issues(filter:{updatedAt:{gte:$since}}, first:N, after:$cursor,
-  orderBy: updatedAt)`, paginates with cursor-stall detection and a hard
-  page cap, drains nested `labels`/`comments` connections for each issue,
-  bounds the request size against `--max-issues`, and persists the
-  high-water mark to `sync_state.issues.tail`. `--resume` reads that
-  stored mark for the next run.
+  orderBy: updatedAt)`. `since` is shifted backwards by 60s on every
+  run so updates inside the same second cannot escape between runs.
+  Paginates with three guards: cursor-stall (`endCursor` repeats), 4
+  consecutive empty pages with `hasNextPage=true`, and a 30-minute
+  wall-clock budget. Drains nested `labels` / `comments` connections
+  for each issue. Bounds the request size against `--max-issues` per
+  page. Persists the high-water mark to `sync_state.linear.issues_tail`.
+  `--resume` reads that stored mark for the next run.
 - **Exact sync** (`sync --issue <id-or-identifier>`) hydrates one issue.
 - **Streaming sync** (`sync --updated-since --ndjson`) writes each
   ingested issue as a JSON line; the cursor only advances for pages
   whose `onIssue` callbacks all returned nil, so a broken stdout pipe
   does not lose unconsumed issues.
 
+The Linear client retries 429/5xx (with `Retry-After` if the server
+sent one) up to `MaxAttempts` times with exponential backoff + jitter
+through a context-aware sleeper. Authentication failures (401/403) and
+not-found errors are surfaced immediately without retry.
+
 Provider access uses the official Linear GraphQL API. UI scraping,
-undocumented endpoints, rate-limit bypass, and credential sharing are out
-of scope.
+undocumented endpoints, rate-limit bypass, and credential sharing are
+out of scope.
 
 ## Agent use
 
