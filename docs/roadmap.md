@@ -12,7 +12,9 @@ and tenant-specific operating details do not belong in this repository.
   `validation`, `config`).
 - `describe --json`: full machine-readable schema for every command
   (args, flags with type/required/default, mutually-exclusive groups,
-  exit-code table, field-mask vocabulary).
+  `mutates` classification, examples, notes, exit-code table,
+  field-mask vocabulary). Recursive walker so multi-word commands like
+  `store verify` are discoverable.
 - `doctor --offline --json` with redacted credential presence flags.
 - Fixture sync from `testdata/synthetic/`, stdin sync of `Snapshot` JSON
   or NDJSON envelopes, entity sync (paginated), exact-by-id sync, bounded
@@ -28,24 +30,32 @@ and tenant-specific operating details do not belong in this repository.
 - `query` raw GraphQL passthrough (inline or file-backed).
 - `export --out` canonical NDJSON dump, sandboxed to CWD with symlink
   resolution; `export | sync --stdin` round-trips losslessly.
-- `--dry-run` on every `sync` mode.
-- Input hardening: identifier regex, control-character rejection, output
-  path sandbox, FTS5 phrase quoting.
-- Local archive at `0700/0600` permissions.
-- Agent skill at `skills/lincrawl/SKILL.md` (YAML frontmatter + workflows).
-- `./scripts/smoke` and `./scripts/verify` for the local gate.
-
-## Next
-
-- Encrypted snapshot pipeline (`archive`, `publish`, `import`,
-  `store verify`, `subscribe`) — wraps `export` output in zstd + age and
-  adds manifest tracking. Mirrors the fincrawl artifact shape
-  (`*.jsonl.zst.age`).
+- **Encrypted snapshot pipeline**: `archive` (fixture), `publish`
+  (local store), `import` (single snapshot), `store verify` (manifest +
+  canonical artifact layout), `subscribe` (verify + ingest every
+  snapshot in a tenant store). Artifacts are zstd-compressed and
+  age-encrypted (`*.jsonl.zst.age`) with X25519 or SSH recipients.
 - Repository guard (`guard --json`) blocking committable plaintext
   archives, generated artifacts, secret-looking values, real Linear
   URLs, and transcript-like data outside `testdata/synthetic/`.
 - CI verify on PRs and `goreleaser release` on tags via semantic-release
   for `0.0.x` bootstrap.
+- `--dry-run` on every `sync` mode.
+- Input hardening: identifier regex, control-character rejection, output
+  path sandbox, FTS5 phrase quoting, manifest schema-version allowlist.
+- Local archive at `0700/0600` permissions; cross-process file lock
+  around every writer.
+- Agent skill at `skills/lincrawl/SKILL.md` (YAML frontmatter + workflows).
+- `./scripts/smoke` and `./scripts/verify` for the local gate.
+
+## Next
+
+- Raw provider payload retention populated from live sync (table exists;
+  writes are not wired).
+- Active-window resume with per-issue commit so a mid-page crash on a
+  large backfill loses one issue, not a page.
+- `content_hash` short-circuit reuse on `import`/`subscribe` so
+  ingesting an unchanged snapshot is a no-op.
 
 ## Later
 

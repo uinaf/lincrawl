@@ -4,9 +4,10 @@ Local-first Linear work-graph archive CLI.
 
 `lincrawl` syncs Linear teams, projects, issues, comments, labels, and
 workflow states into a private local SQLite archive, runs FTS5 search
-offline, exports a canonical JSONL dump for handoff, and accepts the same
-JSONL back through stdin for lossless round-trip. Read-only against Linear
-by construction.
+offline, exports a canonical JSONL dump, and publishes encrypted
+`*.jsonl.zst.age` snapshots to a tenant-controlled store that
+subscribers can verify and re-import. Read-only against Linear by
+construction.
 
 This repository is the generic crawler core. Tenant credentials, real
 workspace identifiers, issue bodies, comments, snapshots, logs, reports,

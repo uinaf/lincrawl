@@ -30,6 +30,12 @@ lincrawl query --graphql 'query { viewer { id } }' [--vars '{...}'] --json
 lincrawl query --graphql-file ./op.graphql --vars '{"id":"..."}' --json
 lincrawl export --out ./snapshots/lincrawl.jsonl --json
 lincrawl export --out -                          # NDJSON to stdout
+
+lincrawl archive --fixture testdata/synthetic --recipient "$LINCRAWL_AGE_RECIPIENT" --out ./out.jsonl.zst.age --json
+lincrawl publish --recipient "$LINCRAWL_AGE_RECIPIENT" --out ./tenant-store/artifacts/snapshots/full/2026/05/lincrawl-full.jsonl.zst.age --json
+lincrawl import --in ./snapshots/lincrawl-full.jsonl.zst.age --identity-file ~/.lincrawl-identity --json
+lincrawl store verify ./tenant-store --json
+lincrawl subscribe ./tenant-store --identity-file ~/.lincrawl-identity --json
 ```
 
 Every command takes `--dry-run` where it would mutate. JSON is the default
@@ -41,13 +47,11 @@ and the field-mask vocabulary for `show`, `search`, and `status`.
 
 ## Deferred
 
-- Encrypted snapshot pipeline (`archive`, `publish`, `import`,
-  `store verify`, `subscribe`) — would wrap `export` output in zstd + age
-  and add manifest tracking for the tenant store
-- Repository guard (`guard --json`) for committable plaintext / generated
-  artifacts / leaked tenant data
-- CI verify on PRs + `goreleaser` releases
 - Cycles, initiatives, attachment metadata
+- Raw provider payload retention (`raw_blobs` table is reserved; live
+  sync does not yet write to it)
+- Active-window resume with per-issue commit (current `--resume` reads
+  the high-water mark and re-pulls; mid-page crash loses the page)
 
 ## Package shape
 

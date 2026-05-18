@@ -230,8 +230,13 @@ var mutuallyExclusiveByCommand = map[string][][]string{
 // filesystem. Agents branch on `mutates: true` to decide whether to
 // preflight with `--dry-run`.
 var mutatingCommands = map[string]bool{
-	"sync":   true,
-	"export": true,
+	"sync":         true,
+	"export":       true,
+	"archive":      true,
+	"publish":      true,
+	"import":       true,
+	"subscribe":    true,
+	"store verify": false, // read-only; explicit so agents do not preflight
 }
 
 var commandNotes = map[string][]string{
@@ -251,6 +256,31 @@ var commandNotes = map[string][]string{
 		"NDJSON envelopes: {\"kind\":\"team|state|user|label|project|issue\",\"item\":{...}}.",
 		"--out is sandboxed under CWD with symlink resolution; --out - writes to stdout.",
 		"Round-trips losslessly via `sync --stdin`.",
+	},
+	"archive": {
+		"Writes records from a fixture directory only; use `publish` to archive the local store.",
+		"Recipient is read from --recipient or LINCRAWL_AGE_RECIPIENT (age1... or ssh-... public key).",
+		"--out is sandboxed under CWD and must end with .jsonl.zst.age.",
+	},
+	"publish": {
+		"Encrypts the entire local archive (teams, states, users, labels, projects, issues + comments).",
+		"Reads the store inside a single transaction for a consistent snapshot.",
+		"Recipient is read from --recipient or LINCRAWL_AGE_RECIPIENT.",
+	},
+	"import": {
+		"Decrypts a single .jsonl.zst.age snapshot and ingests it via the same idempotent upsert path as sync.",
+		"--in accepts an absolute path so operators can import from a tenant store mount; --graphql-file is sandboxed.",
+		"Identity is read from --identity, LINCRAWL_AGE_IDENTITY, or LINCRAWL_AGE_IDENTITY_FILE.",
+	},
+	"store verify": {
+		"Reads manifest.json and walks the store tree.",
+		"Enforces the canonical artifacts/snapshots/{full,delta}/YYYY/MM/ layout and *.jsonl.zst.age extension.",
+		"Rejects plaintext archives, runtime state, symlinks, and forbidden directories (logs/, reports/, screenshots/, transcripts/).",
+	},
+	"subscribe": {
+		"Runs `store verify` then ingests each listed snapshot in manifest order under a write lock.",
+		"On partial failure the error message names the snapshot path that failed; already-ingested snapshots stay in the local archive.",
+		"Identity is read from --identity, LINCRAWL_AGE_IDENTITY, or LINCRAWL_AGE_IDENTITY_FILE.",
 	},
 	"guard": {"Honors .gitignore in git checkouts. Scans every tracked-style file under 2 MiB."},
 }
@@ -283,16 +313,21 @@ type describeResult struct {
 const describeSchemaVersion = "lincrawl.cli.v1"
 
 var commandExamples = map[string]string{
-	"doctor":   "lincrawl doctor --offline --json",
-	"describe": "lincrawl describe --json",
-	"status":   "lincrawl status --json --fields counts",
-	"sync":     "lincrawl sync --updated-since 24h --max-issues 200 --json",
-	"search":   `lincrawl search "ingest" --fields identifier,title --json`,
-	"show":     "lincrawl show LIN-1 --fields identifier,title,labels --json",
-	"query":    `lincrawl query --graphql 'query { viewer { id name } }' --json`,
-	"export":   "lincrawl export --out ./snapshots/lincrawl.jsonl --json",
-	"guard":    "lincrawl guard --json",
-	"version":  "lincrawl version --json",
+	"doctor":       "lincrawl doctor --offline --json",
+	"describe":     "lincrawl describe --json",
+	"status":       "lincrawl status --json --fields counts",
+	"sync":         "lincrawl sync --updated-since 24h --max-issues 200 --json",
+	"search":       `lincrawl search "ingest" --fields identifier,title --json`,
+	"show":         "lincrawl show LIN-1 --fields identifier,title,labels --json",
+	"query":        `lincrawl query --graphql 'query { viewer { id name } }' --json`,
+	"export":       "lincrawl export --out ./snapshots/lincrawl.jsonl --json",
+	"archive":      "lincrawl archive --fixture testdata/synthetic --recipient $LINCRAWL_AGE_RECIPIENT --out ./out.jsonl.zst.age --json",
+	"publish":      "lincrawl publish --recipient $LINCRAWL_AGE_RECIPIENT --out ./snapshots/lincrawl-full.jsonl.zst.age --json",
+	"import":       "lincrawl import --in ./snapshots/lincrawl-full.jsonl.zst.age --identity-file ~/.lincrawl-identity --json",
+	"store verify": "lincrawl store verify ./tenant-store --json",
+	"subscribe":    "lincrawl subscribe ./tenant-store --identity-file ~/.lincrawl-identity --json",
+	"guard":        "lincrawl guard --json",
+	"version":      "lincrawl version --json",
 }
 
 func (c *describeCmd) Run(cc commandContext) error {
@@ -320,49 +355,7 @@ func (c *describeCmd) Run(cc commandContext) error {
 			"status": {"home", "database_path", "exists", "counts"},
 		},
 	}
-	for _, node := range model.Node.Children {
-		if node.Type != kong.CommandNode {
-			continue
-		}
-		cmd := commandDescription{
-			Name:     node.Name,
-			Help:     node.Help,
-			Mutates:  mutatingCommands[node.Name],
-			Args:     []argSpec{},
-			Flags:    []flagSpec{},
-			Example:  commandExamples[node.Name],
-			Examples: commandExtraExamples[node.Name],
-			Notes:    commandNotes[node.Name],
-		}
-		for _, pos := range node.Positional {
-			cmd.Args = append(cmd.Args, argSpec{
-				Name:     pos.Name,
-				Type:     pos.Target.Type().String(),
-				Required: pos.Required,
-				Help:     pos.Help,
-			})
-		}
-		for _, f := range node.Flags {
-			if f.Name == "help" {
-				continue
-			}
-			spec := flagSpec{
-				Name:     "--" + f.Name,
-				Type:     f.Target.Type().String(),
-				Required: f.Required,
-				Default:  f.Default,
-				Help:     f.Help,
-			}
-			if f.Enum != "" {
-				spec.Enum = splitCSV(f.Enum)
-			}
-			cmd.Flags = append(cmd.Flags, spec)
-		}
-		if groups, ok := mutuallyExclusiveByCommand[node.Name]; ok {
-			cmd.MutuallyExclusive = groups
-		}
-		result.Commands = append(result.Commands, cmd)
-	}
+	walkCommands(model.Node, "", &result.Commands)
 	if c.Command != "" {
 		filtered := result.Commands[:0]
 		for _, cmd := range result.Commands {
@@ -382,6 +375,71 @@ func (c *describeCmd) Run(cc commandContext) error {
 		fmt.Fprintf(cc.stdout, "%-10s %s\n", cmd.Name, cmd.Help)
 	}
 	return nil
+}
+
+// walkCommands recursively visits the Kong model and emits one
+// commandDescription per command leaf. Group commands (those with
+// child subcommands and no Run method) are skipped; the children show
+// up as multi-word names like "store verify".
+func walkCommands(node *kong.Node, prefix string, out *[]commandDescription) {
+	for _, child := range node.Children {
+		if child.Type != kong.CommandNode {
+			continue
+		}
+		name := child.Name
+		if prefix != "" {
+			name = prefix + " " + child.Name
+		}
+		hasSubcommands := false
+		for _, gc := range child.Children {
+			if gc.Type == kong.CommandNode {
+				hasSubcommands = true
+				break
+			}
+		}
+		if hasSubcommands {
+			walkCommands(child, name, out)
+			continue
+		}
+		cmd := commandDescription{
+			Name:     name,
+			Help:     child.Help,
+			Mutates:  mutatingCommands[name],
+			Args:     []argSpec{},
+			Flags:    []flagSpec{},
+			Example:  commandExamples[name],
+			Examples: commandExtraExamples[name],
+			Notes:    commandNotes[name],
+		}
+		for _, pos := range child.Positional {
+			cmd.Args = append(cmd.Args, argSpec{
+				Name:     pos.Name,
+				Type:     pos.Target.Type().String(),
+				Required: pos.Required,
+				Help:     pos.Help,
+			})
+		}
+		for _, f := range child.Flags {
+			if f.Name == "help" {
+				continue
+			}
+			spec := flagSpec{
+				Name:     "--" + f.Name,
+				Type:     f.Target.Type().String(),
+				Required: f.Required,
+				Default:  f.Default,
+				Help:     f.Help,
+			}
+			if f.Enum != "" {
+				spec.Enum = splitCSV(f.Enum)
+			}
+			cmd.Flags = append(cmd.Flags, spec)
+		}
+		if groups, ok := mutuallyExclusiveByCommand[name]; ok {
+			cmd.MutuallyExclusive = groups
+		}
+		*out = append(*out, cmd)
+	}
 }
 
 func splitCSV(in string) []string {
@@ -1091,8 +1149,8 @@ func (c *storeVerifyCmd) Run(cc commandContext) error {
 		return wrapErr(err, "internal", ExitInternal)
 	}
 	if !res.OK {
-		_ = writeJSON(cc.stderr, res)
-		return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: fmt.Sprintf("store verify: %d findings", len(res.Findings))}
+		msg := fmt.Sprintf("store verify: %d findings: %s", len(res.Findings), strings.Join(res.Findings, "; "))
+		return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: msg}
 	}
 	return writeJSON(cc.stdout, res)
 }

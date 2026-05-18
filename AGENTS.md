@@ -1,11 +1,11 @@
 # Agent Guide
 
-`lincrawl` is a local-first Linear archive CLI. It
-syncs Linear (teams, projects, issues, comments, labels, states) into a local
-SQLite archive, searches it offline, and (eventually) writes encrypted
-snapshots for tenant-private stores. Tenant data, credentials, generated
-artifacts, snapshots, logs, reports, and transcript-like content must not be
-committed here.
+`lincrawl` is a local-first Linear archive CLI. It syncs Linear (teams,
+projects, issues, comments, labels, states) into a local SQLite archive,
+searches it offline, and writes encrypted `*.jsonl.zst.age` snapshots
+that tenant-controlled subscriber stores can verify and re-import.
+Tenant data, credentials, generated artifacts, snapshots, logs, reports,
+and transcript-like content must not be committed here.
 
 ## Fast start
 
