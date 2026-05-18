@@ -3,11 +3,16 @@ module github.com/uinaf/lincrawl
 go 1.26.2
 
 require (
+	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.13.0
+	github.com/klauspost/compress v1.18.6
 	github.com/openclaw/crawlkit v0.6.0
+	golang.org/x/crypto v0.45.0
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect

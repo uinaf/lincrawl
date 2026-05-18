@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
 
+	"github.com/uinaf/lincrawl/internal/archive"
 	"github.com/uinaf/lincrawl/internal/buildinfo"
 	"github.com/uinaf/lincrawl/internal/config"
 	"github.com/uinaf/lincrawl/internal/guard"
@@ -23,19 +25,63 @@ import (
 	"github.com/uinaf/lincrawl/internal/lock"
 	"github.com/uinaf/lincrawl/internal/store"
 	"github.com/uinaf/lincrawl/internal/syncer"
+	"github.com/uinaf/lincrawl/internal/tenantstore"
 )
 
 type rootCmd struct {
-	Doctor   doctorCmd   `cmd:"" help:"Check local configuration."`
-	Describe describeCmd `cmd:"" help:"Print machine-readable command schemas."`
-	Status   statusCmd   `cmd:"" help:"Print local archive status."`
-	Sync     syncCmd     `cmd:"" help:"Sync issues from fixtures or Linear."`
-	Search   searchCmd   `cmd:"" help:"Search the local archive."`
-	Show     showCmd     `cmd:"" help:"Show one local issue by id or identifier."`
-	Query    queryCmd    `cmd:"" help:"Run a raw Linear GraphQL query."`
-	Export   exportCmd   `cmd:"" help:"Export the local archive as canonical JSONL."`
-	Guard    guardCmd    `cmd:"" help:"Scan the working tree for tenant data leaks."`
-	Version  versionCmd  `cmd:"" help:"Print version information."`
+	Doctor    doctorCmd    `cmd:"" help:"Check local configuration."`
+	Describe  describeCmd  `cmd:"" help:"Print machine-readable command schemas."`
+	Status    statusCmd    `cmd:"" help:"Print local archive status."`
+	Sync      syncCmd      `cmd:"" help:"Sync issues from fixtures or Linear."`
+	Search    searchCmd    `cmd:"" help:"Search the local archive."`
+	Show      showCmd      `cmd:"" help:"Show one local issue by id or identifier."`
+	Query     queryCmd     `cmd:"" help:"Run a raw Linear GraphQL query."`
+	Export    exportCmd    `cmd:"" help:"Export the local archive as canonical JSONL."`
+	Archive   archiveCmd   `cmd:"" help:"Write an encrypted snapshot from a fixture or the local store."`
+	Publish   publishCmd   `cmd:"" help:"Publish the local archive as an encrypted snapshot."`
+	Import    importCmd    `cmd:"" help:"Import an encrypted snapshot into the local archive."`
+	Store     storeCmd     `cmd:"" help:"Inspect or verify a tenant-controlled snapshot store."`
+	Subscribe subscribeCmd `cmd:"" help:"Import every snapshot in a verified tenant store."`
+	Guard     guardCmd     `cmd:"" help:"Scan the working tree for tenant data leaks."`
+	Version   versionCmd   `cmd:"" help:"Print version information."`
+}
+
+type archiveCmd struct {
+	Fixture   string `help:"Read records from a fixture directory instead of the local store."`
+	Recipient string `help:"Age recipient (age1... or ssh-... public key) for encryption. Defaults to LINCRAWL_AGE_RECIPIENT."`
+	Out       string `help:"Output path (sandboxed under CWD). Must end with .jsonl.zst.age."`
+	DryRun    bool   `help:"Print the would-write plan without touching disk." name:"dry-run"`
+	JSON      bool   `help:"Emit JSON." default:"true" negatable:""`
+}
+
+type publishCmd struct {
+	Recipient string `help:"Age recipient (age1... or ssh-... public key). Defaults to LINCRAWL_AGE_RECIPIENT."`
+	Out       string `help:"Output path (sandboxed under CWD). Must end with .jsonl.zst.age."`
+	DryRun    bool   `help:"Print the would-write plan without touching disk." name:"dry-run"`
+	JSON      bool   `help:"Emit JSON." default:"true" negatable:""`
+}
+
+type importCmd struct {
+	In       string `help:"Path to an encrypted snapshot (*.jsonl.zst.age)."`
+	Identity string `help:"Age identity (PEM SSH private key or age-secret-key). Defaults to LINCRAWL_AGE_IDENTITY / LINCRAWL_AGE_IDENTITY_FILE."`
+	DryRun   bool   `help:"Decode + count without writing to SQLite." name:"dry-run"`
+	JSON     bool   `help:"Emit JSON." default:"true" negatable:""`
+}
+
+type storeCmd struct {
+	Verify storeVerifyCmd `cmd:"" help:"Verify a tenant snapshot store's manifest and tree."`
+}
+
+type storeVerifyCmd struct {
+	Path string `arg:"" help:"Path to the tenant snapshot store root."`
+	JSON bool   `help:"Emit JSON." default:"true" negatable:""`
+}
+
+type subscribeCmd struct {
+	Path     string `arg:"" help:"Path to the tenant snapshot store root."`
+	Identity string `help:"Age identity. Defaults to LINCRAWL_AGE_IDENTITY / LINCRAWL_AGE_IDENTITY_FILE."`
+	DryRun   bool   `help:"Verify and report the import plan without writing." name:"dry-run"`
+	JSON     bool   `help:"Emit JSON." default:"true" negatable:""`
 }
 
 type guardCmd struct {
@@ -843,6 +889,278 @@ func (c *showCmd) Run(cc commandContext) error {
 	}
 	fmt.Fprintf(cc.stdout, "%s\t%s\n%s\n", rec.Identifier, rec.Title, rec.Description)
 	return nil
+}
+
+func resolveRecipient(flag string) (string, error) {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v, nil
+	}
+	if v := strings.TrimSpace(os.Getenv(config.EnvAgeRecipient)); v != "" {
+		return v, nil
+	}
+	return "", configErr("age recipient required: pass --recipient or set " + config.EnvAgeRecipient)
+}
+
+func resolveIdentity(flag string) (string, error) {
+	if v := strings.TrimSpace(flag); v != "" {
+		return v, nil
+	}
+	if v := strings.TrimSpace(os.Getenv(config.EnvAgeIdentity)); v != "" {
+		return v, nil
+	}
+	if path := strings.TrimSpace(os.Getenv("LINCRAWL_AGE_IDENTITY_FILE")); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", wrapErr(err, "config", ExitConfig)
+		}
+		return string(raw), nil
+	}
+	return "", configErr("age identity required: pass --identity, set " + config.EnvAgeIdentity + ", or set LINCRAWL_AGE_IDENTITY_FILE")
+}
+
+func validatedOutPath(out, cwd string) (string, error) {
+	if out == "" {
+		return "", usageErr("--out is required")
+	}
+	if !strings.HasSuffix(out, ".jsonl.zst.age") {
+		return "", validationErr("--out must end with .jsonl.zst.age")
+	}
+	abs, err := validateOutputPath(out, cwd)
+	if err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func (c *archiveCmd) Run(cc commandContext) error {
+	if c.Fixture == "" {
+		return usageErr("archive: --fixture is required (use `publish` to archive the local store)")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	fixtureAbs, err := validateInputPath(c.Fixture, cwd)
+	if err != nil {
+		return err
+	}
+	snap, err := linear.LoadFixture(fixtureAbs)
+	if err != nil {
+		return wrapErr(err, "validation", ExitValidation)
+	}
+	records := archive.SnapshotRecords(snap)
+	if c.DryRun {
+		return writeJSON(cc.stdout, map[string]any{
+			"mode":     "archive-fixture",
+			"fixture":  fixtureAbs,
+			"records":  len(records),
+			"out":      c.Out,
+		})
+	}
+	recipient, err := resolveRecipient(c.Recipient)
+	if err != nil {
+		return err
+	}
+	outAbs, err := validatedOutPath(c.Out, cwd)
+	if err != nil {
+		return err
+	}
+	if err := archive.WriteEncryptedJSONL(outAbs, recipient, records); err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	fi, _ := os.Stat(outAbs)
+	return writeJSON(cc.stdout, map[string]any{"out": outAbs, "records": len(records), "bytes": fi.Size()})
+}
+
+func (c *publishCmd) Run(cc commandContext) error {
+	rt, err := config.LoadRuntime()
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	s, err := store.OpenReadOnly(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	defer s.Close()
+	snap, err := s.Snapshot()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	records := archive.SnapshotRecords(snap)
+	if c.DryRun {
+		return writeJSON(cc.stdout, map[string]any{
+			"mode":    "publish",
+			"db":      rt.DatabasePath,
+			"records": len(records),
+			"out":     c.Out,
+		})
+	}
+	recipient, err := resolveRecipient(c.Recipient)
+	if err != nil {
+		return err
+	}
+	outAbs, err := validatedOutPath(c.Out, cwd)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outAbs), 0o700); err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	if err := archive.WriteEncryptedJSONL(outAbs, recipient, records); err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	fi, _ := os.Stat(outAbs)
+	return writeJSON(cc.stdout, map[string]any{"out": outAbs, "records": len(records), "bytes": fi.Size()})
+}
+
+func (c *importCmd) Run(cc commandContext) error {
+	if c.In == "" {
+		return usageErr("--in is required")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	inAbs, err := validateInputPath(c.In, cwd)
+	if err != nil {
+		return err
+	}
+	identity, err := resolveIdentity(c.Identity)
+	if err != nil {
+		return err
+	}
+	records, err := archive.ReadEncryptedJSONL(inAbs, identity)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	snap, err := archive.RecordsSnapshot(records)
+	if err != nil {
+		return wrapErr(err, "validation", ExitValidation)
+	}
+	if c.DryRun {
+		return writeJSON(cc.stdout, map[string]any{
+			"mode":         "import",
+			"in":           inAbs,
+			"records":      len(records),
+			"would_ingest": snapshotCounts(snap),
+		})
+	}
+	rt, err := config.LoadRuntime()
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	if err := config.EnsureDirs(rt); err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	lck, err := lock.Acquire(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	defer lck.Release()
+	s, err := store.Open(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	defer s.Close()
+	if err := s.IngestSnapshot(snap); err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	counts, _ := s.Counts()
+	return writeJSON(cc.stdout, map[string]any{
+		"in":      inAbs,
+		"records": len(records),
+		"counts":  counts,
+	})
+}
+
+func (c *storeVerifyCmd) Run(cc commandContext) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	rootAbs, err := validateInputPath(c.Path, cwd)
+	if err != nil {
+		return err
+	}
+	res, err := tenantstore.Verify(rootAbs)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	if !res.OK {
+		_ = writeJSON(cc.stderr, res)
+		return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: fmt.Sprintf("store verify: %d findings", len(res.Findings))}
+	}
+	return writeJSON(cc.stdout, res)
+}
+
+func (c *subscribeCmd) Run(cc commandContext) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	rootAbs, err := validateInputPath(c.Path, cwd)
+	if err != nil {
+		return err
+	}
+	snaps, err := tenantstore.VerifiedSnapshots(rootAbs)
+	if err != nil {
+		return wrapErr(err, "validation", ExitValidation)
+	}
+	if c.DryRun {
+		return writeJSON(cc.stdout, map[string]any{
+			"mode":      "subscribe",
+			"store":     rootAbs,
+			"snapshots": snaps,
+			"note":      "dry-run: would decrypt and ingest each snapshot in order",
+		})
+	}
+	identity, err := resolveIdentity(c.Identity)
+	if err != nil {
+		return err
+	}
+	rt, err := config.LoadRuntime()
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	if err := config.EnsureDirs(rt); err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	lck, err := lock.Acquire(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	defer lck.Release()
+	s, err := store.Open(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	defer s.Close()
+	totalRecords := 0
+	for _, snap := range snaps {
+		records, err := archive.ReadEncryptedJSONL(snap.FullPath, identity)
+		if err != nil {
+			return wrapErr(err, "internal", ExitInternal)
+		}
+		fragment, err := archive.RecordsSnapshot(records)
+		if err != nil {
+			return wrapErr(err, "validation", ExitValidation)
+		}
+		if err := s.IngestSnapshot(fragment); err != nil {
+			return wrapErr(err, "internal", ExitInternal)
+		}
+		totalRecords += len(records)
+	}
+	counts, _ := s.Counts()
+	return writeJSON(cc.stdout, map[string]any{
+		"store":     rootAbs,
+		"snapshots": len(snaps),
+		"records":   totalRecords,
+		"counts":    counts,
+	})
 }
 
 func snapshotCounts(snap linear.Snapshot) map[string]int {
