@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Bounded live proof against the real Linear API. Not part of scripts/verify.
+# Set LINEAR_API_KEY in your shell or .env.local before running.
+#
+# Optional envelopes for bigger blast radius:
+#   LINCRAWL_LIVE_HOME            - reuse a persistent state dir (default: mktemp -d)
+#   LINCRAWL_LIVE_UPDATED_SINCE   - run a tail sync (e.g. 1h, 24h, 7d)
+#   LINCRAWL_LIVE_MAX_ISSUES      - cap issues for the tail run (default: 5)
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ -n "${LINCRAWL_LIVE_HOME:-}" ]]; then
+  scratch="$LINCRAWL_LIVE_HOME"
+else
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/lincrawl-live-smoke.XXXXXX")"
+  cleanup() { rm -rf "$scratch"; }
+  trap cleanup EXIT
+fi
+export LINCRAWL_HOME="$scratch"
+
+echo "using LINCRAWL_HOME=$LINCRAWL_HOME"
+
+go run ./cmd/lincrawl doctor --offline >/dev/null
+go run ./cmd/lincrawl sync --entities --dry-run >/dev/null
+go run ./cmd/lincrawl sync --entities >/dev/null
+
+if [[ -n "${LINCRAWL_LIVE_UPDATED_SINCE:-}" ]]; then
+  limit="${LINCRAWL_LIVE_MAX_ISSUES:-5}"
+  go run ./cmd/lincrawl sync --updated-since "$LINCRAWL_LIVE_UPDATED_SINCE" --max-issues "$limit" --dry-run >/dev/null
+  go run ./cmd/lincrawl sync --updated-since "$LINCRAWL_LIVE_UPDATED_SINCE" --max-issues "$limit" >/dev/null
+fi
+
+go run ./cmd/lincrawl status >/dev/null
+echo "local live smoke ok"

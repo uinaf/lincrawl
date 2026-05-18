@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+go test ./...
+go vet ./...
+./scripts/smoke
+go run ./cmd/lincrawl guard --json >/dev/null
