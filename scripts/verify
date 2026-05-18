@@ -21,6 +21,7 @@ go test ./...
 go test -race ./...
 ./scripts/smoke
 go run ./cmd/lincrawl guard --json >/dev/null
+./scripts/release-check
 git diff --check
 
 echo "verify ok"

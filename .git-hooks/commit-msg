@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+subject="$(sed -n '1p' "$1")"
+
+case "$subject" in
+  "Merge "*|"Revert "*)
+    exit 0
+    ;;
+esac
+
+if [[ ! "$subject" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([a-z0-9._-]+\))?(!)?:\ .+ ]]; then
+  cat >&2 <<'EOF'
+Commit subject must use Conventional Commits:
+  feat(cli): add live entity sync
+  fix(guard): block plaintext archives
+  ci: pin GitHub Actions versions
+EOF
+  exit 1
+fi

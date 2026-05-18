@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if grep -Eq 'replace_existing_artifacts:[[:space:]]*true' .goreleaser.yaml; then
+  echo "release-check failed: release artifacts must fail closed instead of replacing existing assets" >&2
+  exit 1
+fi
+
+go run github.com/goreleaser/goreleaser/v2@v2.15.4 check
+
+echo "release-check ok"
