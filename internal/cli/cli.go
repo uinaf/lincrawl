@@ -143,7 +143,8 @@ func (c *versionCmd) Run(cc commandContext) error {
 // describeCmd emits machine-readable schema for every command so agents can
 // introspect the surface without reading help text.
 type describeCmd struct {
-	JSON bool `help:"Emit JSON." default:"true" negatable:""`
+	Command string `arg:"" help:"Single command to describe; omit to dump every command." optional:""`
+	JSON    bool   `help:"Emit JSON." default:"true" negatable:""`
 }
 
 type flagSpec struct {
@@ -163,12 +164,15 @@ type argSpec struct {
 }
 
 type commandDescription struct {
-	Name             string       `json:"name"`
-	Help             string       `json:"help"`
-	Args             []argSpec    `json:"args"`
-	Flags            []flagSpec   `json:"flags"`
-	MutuallyExclusive [][]string  `json:"mutually_exclusive,omitempty"`
-	Example          string       `json:"example,omitempty"`
+	Name              string     `json:"name"`
+	Help              string     `json:"help"`
+	Mutates           bool       `json:"mutates"`
+	Args              []argSpec  `json:"args"`
+	Flags             []flagSpec `json:"flags"`
+	MutuallyExclusive [][]string `json:"mutually_exclusive,omitempty"`
+	Example           string     `json:"example,omitempty"`
+	Examples          []string   `json:"examples,omitempty"`
+	Notes             []string   `json:"notes,omitempty"`
 }
 
 var mutuallyExclusiveByCommand = map[string][][]string{
@@ -176,13 +180,61 @@ var mutuallyExclusiveByCommand = map[string][][]string{
 	"query": {{"--graphql", "--graphql-file"}},
 }
 
-type describeResult struct {
-	Tool      string                       `json:"tool"`
-	Version   string                       `json:"version"`
-	ExitCodes map[string]int               `json:"exit_codes"`
-	FieldMasks map[string][]string         `json:"field_masks"`
-	Commands  []commandDescription         `json:"commands"`
+// mutatingCommands list commands that write to the store, network, or
+// filesystem. Agents branch on `mutates: true` to decide whether to
+// preflight with `--dry-run`.
+var mutatingCommands = map[string]bool{
+	"sync":   true,
+	"export": true,
 }
+
+var commandNotes = map[string][]string{
+	"sync": {
+		"Live modes (--entities, --updated-since, --resume, --issue) require LINEAR_API_KEY.",
+		"--max-issues bounds blast radius and is honored per page.",
+		"--ndjson streams one issue per line; cursor only advances for pages fully drained to the consumer.",
+		"Tail sync applies a 60s overlap window so updates inside the same second never escape between runs.",
+	},
+	"search": {
+		"User-supplied <query> is quoted as a literal FTS5 phrase. Use --raw to opt into FTS5 syntax.",
+		"--fields trims response payload; unknown fields produce a validation error listing known keys.",
+	},
+	"show":  {"Resolves either a Linear UUID or the TEAM-N identifier (case-insensitive)."},
+	"query": {"Returns the raw GraphQL data envelope. Does not write to the store."},
+	"export": {
+		"NDJSON envelopes: {\"kind\":\"team|state|user|label|project|issue\",\"item\":{...}}.",
+		"--out is sandboxed under CWD with symlink resolution; --out - writes to stdout.",
+		"Round-trips losslessly via `sync --stdin`.",
+	},
+	"guard": {"Honors .gitignore in git checkouts. Scans every tracked-style file under 2 MiB."},
+}
+
+var commandExtraExamples = map[string][]string{
+	"sync": {
+		"lincrawl sync --fixture testdata/synthetic --json",
+		"lincrawl sync --entities --json",
+		"lincrawl sync --updated-since 24h --max-issues 200 --json",
+		"lincrawl sync --resume --max-issues 1000 --json",
+		"lincrawl sync --issue LIN-42 --dry-run --json",
+		"lincrawl sync --updated-since 24h --ndjson | jq -c '{identifier,updated_at}'",
+	},
+	"search": {
+		`lincrawl search "billing" --fields identifier,title,snippet --json`,
+		`lincrawl search "billing" --ndjson | head -20`,
+		`lincrawl search 'identifier:LIN-*' --raw --json`,
+	},
+}
+
+type describeResult struct {
+	SchemaVersion string               `json:"schema_version"`
+	Tool          string               `json:"tool"`
+	Version       string               `json:"version"`
+	ExitCodes     map[string]int       `json:"exit_codes"`
+	FieldMasks    map[string][]string  `json:"field_masks"`
+	Commands      []commandDescription `json:"commands"`
+}
+
+const describeSchemaVersion = "lincrawl.cli.v1"
 
 var commandExamples = map[string]string{
 	"doctor":   "lincrawl doctor --offline --json",
@@ -205,8 +257,9 @@ func (c *describeCmd) Run(cc commandContext) error {
 	}
 	model := parser.Model
 	result := describeResult{
-		Tool:    "lincrawl",
-		Version: buildinfo.Current().Version,
+		SchemaVersion: describeSchemaVersion,
+		Tool:          "lincrawl",
+		Version:       buildinfo.Current().Version,
 		ExitCodes: map[string]int{
 			"ok":         ExitOK,
 			"internal":   ExitInternal,
@@ -226,11 +279,14 @@ func (c *describeCmd) Run(cc commandContext) error {
 			continue
 		}
 		cmd := commandDescription{
-			Name:    node.Name,
-			Help:    node.Help,
-			Args:    []argSpec{},
-			Flags:   []flagSpec{},
-			Example: commandExamples[node.Name],
+			Name:     node.Name,
+			Help:     node.Help,
+			Mutates:  mutatingCommands[node.Name],
+			Args:     []argSpec{},
+			Flags:    []flagSpec{},
+			Example:  commandExamples[node.Name],
+			Examples: commandExtraExamples[node.Name],
+			Notes:    commandNotes[node.Name],
 		}
 		for _, pos := range node.Positional {
 			cmd.Args = append(cmd.Args, argSpec{
@@ -260,6 +316,18 @@ func (c *describeCmd) Run(cc commandContext) error {
 			cmd.MutuallyExclusive = groups
 		}
 		result.Commands = append(result.Commands, cmd)
+	}
+	if c.Command != "" {
+		filtered := result.Commands[:0]
+		for _, cmd := range result.Commands {
+			if cmd.Name == c.Command {
+				filtered = append(filtered, cmd)
+			}
+		}
+		if len(filtered) == 0 {
+			return notFoundErr(fmt.Sprintf("describe: no such command %q", c.Command))
+		}
+		result.Commands = filtered
 	}
 	if c.JSON {
 		return writeJSON(cc.stdout, result)
