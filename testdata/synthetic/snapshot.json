@@ -1,0 +1,78 @@
+{
+  "teams": [
+    { "id": "team-syn-1", "key": "LIN", "name": "Lincrawl Synthetic", "updated_at": "2026-05-01T00:00:00Z" }
+  ],
+  "states": [
+    { "id": "state-syn-backlog", "team_id": "team-syn-1", "name": "Backlog", "type": "backlog" },
+    { "id": "state-syn-started", "team_id": "team-syn-1", "name": "In Progress", "type": "started" },
+    { "id": "state-syn-done", "team_id": "team-syn-1", "name": "Done", "type": "completed" }
+  ],
+  "users": [
+    { "id": "user-syn-1", "name": "Sam Synthetic", "email": "" },
+    { "id": "user-syn-2", "name": "Riley Fixture", "email": "" }
+  ],
+  "labels": [
+    { "id": "label-syn-ingest", "team_id": "team-syn-1", "name": "ingest" },
+    { "id": "label-syn-search", "team_id": "team-syn-1", "name": "search" }
+  ],
+  "projects": [
+    { "id": "project-syn-mvp", "name": "Lincrawl MVP", "state": "started", "updated_at": "2026-05-10T00:00:00Z" }
+  ],
+  "issues": [
+    {
+      "id": "issue-syn-1",
+      "identifier": "LIN-1",
+      "title": "Crawl Linear ingest path",
+      "description": "Implement cursor-paginated issue ingest with updatedAt high-water mark.",
+      "team_id": "team-syn-1",
+      "project_id": "project-syn-mvp",
+      "state_id": "state-syn-started",
+      "assignee_id": "user-syn-1",
+      "creator_id": "user-syn-1",
+      "priority": 2,
+      "label_ids": ["label-syn-ingest"],
+      "created_at": "2026-05-01T10:00:00Z",
+      "updated_at": "2026-05-18T10:00:00Z",
+      "comments": [
+        {
+          "id": "comment-syn-1",
+          "issue_id": "issue-syn-1",
+          "author_id": "user-syn-2",
+          "body": "Make sure ingest is idempotent on repeated runs.",
+          "created_at": "2026-05-02T09:00:00Z",
+          "updated_at": "2026-05-02T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "issue-syn-2",
+      "identifier": "LIN-2",
+      "title": "Snapshot the archive nightly",
+      "description": "Add encrypted snapshot publish with zstd and age.",
+      "team_id": "team-syn-1",
+      "project_id": "project-syn-mvp",
+      "state_id": "state-syn-backlog",
+      "assignee_id": "user-syn-2",
+      "creator_id": "user-syn-1",
+      "priority": 3,
+      "label_ids": [],
+      "created_at": "2026-05-05T10:00:00Z",
+      "updated_at": "2026-05-18T11:00:00Z"
+    },
+    {
+      "id": "issue-syn-3",
+      "identifier": "LIN-3",
+      "title": "Search hot path stays single-table",
+      "description": "Search must run off the FTS5 mirror with bm25 ordering.",
+      "team_id": "team-syn-1",
+      "project_id": "project-syn-mvp",
+      "state_id": "state-syn-done",
+      "assignee_id": "user-syn-1",
+      "creator_id": "user-syn-1",
+      "priority": 1,
+      "label_ids": ["label-syn-search"],
+      "created_at": "2026-05-06T10:00:00Z",
+      "updated_at": "2026-05-17T11:00:00Z"
+    }
+  ]
+}

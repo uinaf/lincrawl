@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+scratch="tmp/lincrawl-smoke-$$"
+home_dir="$scratch/home"
+
+cleanup() {
+  rm -rf "$scratch"
+}
+trap cleanup EXIT
+
+mkdir -p "$home_dir"
+
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl version --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl describe --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl doctor --offline --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl status --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl sync --fixture testdata/synthetic --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl search "ingest" --json | grep -q '"identifier": "LIN-1"'
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl show LIN-1 --json | grep -q '"identifier": "LIN-1"'
+
+echo "smoke ok"

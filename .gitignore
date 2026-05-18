@@ -1,0 +1,33 @@
+# Local credentials
+.env
+.env.local
+.env.*.local
+
+# Local runtime state
+tmp/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+
+# Plaintext / generated archive outputs
+*.jsonl
+*.jsonl.gz
+*.jsonl.zst
+*.tar
+*.tar.gz
+*.tar.zst
+*.log
+*.har
+logs/
+reports/
+screenshots/
+transcripts/
+
+# Build output
+/bin/
+/dist/
+
+# OS / editor
+.DS_Store
+*.swp

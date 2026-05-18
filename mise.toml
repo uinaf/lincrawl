@@ -1,0 +1,46 @@
+[tools]
+go = "1.26.2"
+
+[tasks.verify]
+description = "Run the full local verification gate"
+run = "./scripts/verify"
+
+[tasks.smoke]
+description = "Run the offline synthetic CLI smoke test"
+run = "./scripts/smoke"
+
+[tasks.test]
+description = "Run Go tests"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.race]
+description = "Run Go tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.tidy]
+description = "Run go mod tidy"
+run = "go mod tidy"
+
+[tasks.doctor]
+description = "Check local configuration offline"
+run = "LINCRAWL_HOME=tmp/mise-lincrawl-home go run ./cmd/lincrawl doctor --offline --json"
+
+[tasks.describe]
+description = "Print command schemas"
+run = "go run ./cmd/lincrawl describe --json"
+
+[tasks.sync-fixture]
+description = "Sync synthetic fixtures into a scratch home"
+run = "LINCRAWL_HOME=tmp/mise-lincrawl-home go run ./cmd/lincrawl sync --fixture testdata/synthetic --json"
+
+[tasks.search-fixture]
+description = "Search the synthetic fixture archive"
+run = "LINCRAWL_HOME=tmp/mise-lincrawl-home go run ./cmd/lincrawl search ingest --json"
+
+[tasks.clean-local]
+description = "Remove mise local scratch state"
+run = "rm -rf tmp/mise-lincrawl-home"
