@@ -3,7 +3,7 @@ module github.com/uinaf/lincrawl
 go 1.26.2
 
 require (
-	github.com/alecthomas/kong v1.13.0
+	github.com/alecthomas/kong v1.15.0
 	github.com/openclaw/crawlkit v0.6.0
 )
 
