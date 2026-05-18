@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -156,5 +157,96 @@ func TestSyncRequiresFixture(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Run(context.Background(), []string{"sync"}, &out, &errOut); code == 0 {
 		t.Fatal("expected non-zero exit when --fixture is omitted")
+	}
+}
+
+func TestSyncModesAreMutuallyExclusive(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"sync", "--fixture", "testdata/synthetic", "--entities"}, &out, &errOut)
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage), stderr=%s", code, ExitUsage, errOut.String())
+	}
+	var env struct {
+		Code string `json:"code"`
+		Exit int    `json:"exit"`
+	}
+	if err := json.Unmarshal(errOut.Bytes(), &env); err != nil {
+		t.Fatalf("error envelope JSON: %v\n%s", err, errOut.String())
+	}
+	if env.Code != "usage" || env.Exit != ExitUsage {
+		t.Fatalf("envelope = %+v", env)
+	}
+}
+
+func TestSyncInvalidDuration(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINEAR_API_KEY", "lin_api_test_key")
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"sync", "--updated-since", "junk"}, &out, &errOut)
+	if code != ExitValidation {
+		t.Fatalf("exit = %d, want %d (validation)", code, ExitValidation)
+	}
+}
+
+func TestDescribeSelectiveCommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"describe", "sync"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%s", code, errOut.String())
+	}
+	var desc struct {
+		SchemaVersion string `json:"schema_version"`
+		Commands      []struct {
+			Name              string     `json:"name"`
+			Mutates           bool       `json:"mutates"`
+			MutuallyExclusive [][]string `json:"mutually_exclusive,omitempty"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &desc); err != nil {
+		t.Fatalf("describe JSON: %v\n%s", err, out.String())
+	}
+	if desc.SchemaVersion != "lincrawl.cli.v1" {
+		t.Fatalf("schema_version = %q", desc.SchemaVersion)
+	}
+	if len(desc.Commands) != 1 || desc.Commands[0].Name != "sync" {
+		t.Fatalf("expected exactly the sync command, got %+v", desc.Commands)
+	}
+	if !desc.Commands[0].Mutates {
+		t.Fatal("sync should be marked as mutates=true")
+	}
+	if len(desc.Commands[0].MutuallyExclusive) == 0 {
+		t.Fatal("sync should advertise mutually_exclusive groups")
+	}
+}
+
+func TestDescribeUnknownCommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"describe", "totally-not-a-command"}, &out, &errOut)
+	if code != ExitNotFound {
+		t.Fatalf("exit = %d, want %d", code, ExitNotFound)
+	}
+}
+
+func TestGuardCleanRepoExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# clean"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"guard", "--root", dir, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%s", code, errOut.String())
+	}
+	var res struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("guard JSON: %v\n%s", err, out.String())
+	}
+	if !res.OK {
+		t.Fatal("expected ok=true on a clean tree")
 	}
 }
