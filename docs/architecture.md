@@ -2,7 +2,7 @@
 
 Status: active
 
-`lincrawl` is a local-first Linear archive CLI in the uinaf crawler family.
+`lincrawl` is a local-first Linear archive CLI.
 The reusable repo owns generic crawling, storage, search, export, and
 agent-facing mechanics; tenant credentials, real Linear data, runtime state,
 generated artifacts, and transcript-derived examples stay outside this repo.

@@ -1,6 +1,6 @@
 # Agent Guide
 
-`lincrawl` is a local-first Linear archive CLI in the uinaf crawler family. It
+`lincrawl` is a local-first Linear archive CLI. It
 syncs Linear (teams, projects, issues, comments, labels, states) into a local
 SQLite archive, searches it offline, and (eventually) writes encrypted
 snapshots for tenant-private stores. Tenant data, credentials, generated

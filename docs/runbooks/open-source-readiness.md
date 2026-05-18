@@ -7,7 +7,7 @@ visibility ad hoc.
 ## Repo metadata
 
 - [ ] `README.md` leads with value and the fastest path to use.
-- [ ] `LICENSE` is MIT (matches sibling crawlers).
+- [ ] `LICENSE` is MIT.
 - [ ] `SECURITY.md` describes private vulnerability reporting.
 - [ ] `CONTRIBUTING.md` covers local setup, validation, and commit style.
 - [ ] `AGENTS.md` is the canonical agent guide; `CLAUDE.md` is a

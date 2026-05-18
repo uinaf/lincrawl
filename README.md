@@ -1,6 +1,6 @@
 # lincrawl
 
-Local-first Linear work-graph archive CLI for the uinaf crawler family.
+Local-first Linear work-graph archive CLI.
 
 `lincrawl` syncs Linear teams, projects, issues, comments, labels, and
 workflow states into a private local SQLite archive, runs FTS5 search
