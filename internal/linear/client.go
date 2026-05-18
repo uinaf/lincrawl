@@ -7,17 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/uinaf/lincrawl/internal/buildinfo"
 )
 
 type Client struct {
-	endpoint   string
-	token      string
-	authPrefix string
-	httpClient *http.Client
-	userAgent  string
+	endpoint     string
+	token        string
+	authPrefix   string
+	httpClient   *http.Client
+	userAgent    string
+	MaxAttempts  int
+	RetryBackoff time.Duration
+	Sleep        func(context.Context, time.Duration) error
+	Now          func() time.Time
 }
 
 func NewClient(endpoint, token string) *Client {
@@ -28,18 +36,75 @@ func NewClient(endpoint, token string) *Client {
 	if !strings.HasPrefix(token, "lin_api_") {
 		prefix = "Bearer "
 	}
+	transport := &http.Transport{
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	ua := fmt.Sprintf("lincrawl/%s (+https://github.com/uinaf/lincrawl)", buildinfo.Current().Version)
 	return &Client{
-		endpoint:   endpoint,
-		token:      token,
-		authPrefix: prefix,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
-		userAgent:  "lincrawl/0.0 (+https://github.com/uinaf/lincrawl)",
+		endpoint:     endpoint,
+		token:        token,
+		authPrefix:   prefix,
+		httpClient:   &http.Client{Timeout: 90 * time.Second, Transport: transport},
+		userAgent:    ua,
+		MaxAttempts:  4,
+		RetryBackoff: 500 * time.Millisecond,
+		Sleep:        contextSleep,
+		Now:          func() time.Time { return time.Now() },
+	}
+}
+
+func contextSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
 func (c *Client) SetHTTPClient(h *http.Client) { c.httpClient = h }
 
 func (c *Client) Endpoint() string { return c.endpoint }
+
+// RateLimitError is returned when Linear answers with 429 (or `Retry-After`
+// is present on a 5xx). Callers can retry after waiting `RetryAfter`.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Status     int
+	Message    string
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("linear: rate limited (status=%d, retry-after=%s): %s", e.Status, e.RetryAfter, e.Message)
+}
+
+// AuthError is returned on 401/403 — the caller should not retry.
+type AuthError struct {
+	Status   int
+	Messages []string
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("linear: auth (status=%d): %s", e.Status, strings.Join(e.Messages, "; "))
+}
+
+// NotFoundError is returned on 404 or when GraphQL says the entity is gone.
+type NotFoundError struct {
+	Resource string
+	Messages []string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("linear: %s not found: %s", e.Resource, strings.Join(e.Messages, "; "))
+}
 
 // Query runs an arbitrary GraphQL document with variables and returns the
 // raw `data` envelope. Callers own response shape; lincrawl makes no
@@ -81,6 +146,35 @@ func (c *Client) do(ctx context.Context, req gqlRequest, dst any) error {
 	if err != nil {
 		return err
 	}
+	attempts := c.MaxAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			delay := c.RetryBackoff * time.Duration(1<<(attempt-1))
+			if rl, ok := lastErr.(*RateLimitError); ok && rl.RetryAfter > delay {
+				delay = rl.RetryAfter
+			}
+			delay += time.Duration(rand.Int63n(int64(c.RetryBackoff)))
+			if err := c.Sleep(ctx, delay); err != nil {
+				return err
+			}
+		}
+		err := c.doOnce(ctx, body, dst)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func (c *Client) doOnce(ctx context.Context, body []byte, dst any) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -101,6 +195,22 @@ func (c *Client) do(ctx context.Context, req gqlRequest, dst any) error {
 		return fmt.Errorf("linear: read: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.Header.Get("Retry-After") != "") {
+		return &RateLimitError{
+			Status:     resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			Message:    firstMessage(peelErrorMessages(raw)),
+		}
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &AuthError{Status: resp.StatusCode, Messages: peelErrorMessages(raw)}
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &NotFoundError{Resource: "endpoint", Messages: peelErrorMessages(raw)}
+	}
+	if resp.StatusCode >= 500 {
+		return &APIError{Status: resp.StatusCode, Messages: peelErrorMessages(raw)}
+	}
 	if resp.StatusCode >= 400 {
 		return &APIError{Status: resp.StatusCode, Messages: peelErrorMessages(raw)}
 	}
@@ -126,6 +236,42 @@ func (c *Client) do(ctx context.Context, req gqlRequest, dst any) error {
 		return fmt.Errorf("linear: decode data: %w", err)
 	}
 	return nil
+}
+
+func isRetryable(err error) bool {
+	var rl *RateLimitError
+	if errors.As(err, &rl) {
+		return true
+	}
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status >= 500 {
+		return true
+	}
+	// Transport-level error (network).
+	return strings.Contains(err.Error(), "transport:")
+}
+
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+func firstMessage(msgs []string) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	return msgs[0]
 }
 
 func peelErrorMessages(raw []byte) []string {

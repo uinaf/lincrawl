@@ -49,15 +49,33 @@ type TailResult struct {
 	Counts         store.Counts `json:"counts"`
 }
 
-const maxSyncPages = 1024
+const (
+	maxSyncPages    = 1024
+	tailOverlap     = 60 * time.Second
+	maxWallClock    = 30 * time.Minute
+	maxZeroItemRuns = 4
+)
+
+// applyOverlap shifts `since` backwards by tailOverlap so two updates inside
+// the same second cannot escape between resume runs. Idempotent upserts
+// absorb the duplicates.
+func applyOverlap(since time.Time) time.Time {
+	return since.Add(-tailOverlap)
+}
 
 func IngestIssuesUpdatedSince(ctx context.Context, s *store.Store, c *linear.Client, since time.Time, pageSize, maxIssues int) (TailResult, error) {
 	if s == nil || c == nil {
 		return TailResult{}, errors.New("syncer: nil store or client")
 	}
+	since = applyOverlap(since)
 	res := TailResult{Since: since.UTC().Format(time.RFC3339)}
 	cursor := ""
+	started := time.Now()
+	zeroRuns := 0
 	for page := 0; page < maxSyncPages; page++ {
+		if time.Since(started) > maxWallClock {
+			return res, fmt.Errorf("syncer: wall-clock budget %s exceeded", maxWallClock)
+		}
 		first := pageSize
 		if first <= 0 {
 			first = 100
@@ -93,6 +111,14 @@ func IngestIssuesUpdatedSince(ctx context.Context, s *store.Store, c *linear.Cli
 				res.NewHighWater = iss.UpdatedAt
 			}
 		}
+		if len(issues) == 0 {
+			zeroRuns++
+			if zeroRuns >= maxZeroItemRuns && pg.HasNextPage {
+				return res, fmt.Errorf("syncer: %d consecutive empty pages with hasNextPage=true", zeroRuns)
+			}
+		} else {
+			zeroRuns = 0
+		}
 		if !truncated {
 			res.EndCursor = pg.EndCursor
 		}
@@ -127,11 +153,16 @@ func StreamIssuesUpdatedSince(ctx context.Context, s *store.Store, c *linear.Cli
 	if s == nil || c == nil {
 		return 0, errors.New("syncer: nil store or client")
 	}
+	since = applyOverlap(since)
 	cursor := ""
 	pulled := 0
 	committedHighWater := ""
 	committedCursor := ""
+	started := time.Now()
 	for page := 0; page < maxSyncPages; page++ {
+		if time.Since(started) > maxWallClock {
+			return pulled, fmt.Errorf("syncer: wall-clock budget %s exceeded", maxWallClock)
+		}
 		first := pageSize
 		if first <= 0 {
 			first = 100

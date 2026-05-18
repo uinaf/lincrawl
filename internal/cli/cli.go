@@ -18,7 +18,9 @@ import (
 
 	"github.com/uinaf/lincrawl/internal/buildinfo"
 	"github.com/uinaf/lincrawl/internal/config"
+	"github.com/uinaf/lincrawl/internal/guard"
 	"github.com/uinaf/lincrawl/internal/linear"
+	"github.com/uinaf/lincrawl/internal/lock"
 	"github.com/uinaf/lincrawl/internal/store"
 	"github.com/uinaf/lincrawl/internal/syncer"
 )
@@ -32,7 +34,35 @@ type rootCmd struct {
 	Show     showCmd     `cmd:"" help:"Show one local issue by id or identifier."`
 	Query    queryCmd    `cmd:"" help:"Run a raw Linear GraphQL query."`
 	Export   exportCmd   `cmd:"" help:"Export the local archive as canonical JSONL."`
+	Guard    guardCmd    `cmd:"" help:"Scan the working tree for tenant data leaks."`
 	Version  versionCmd  `cmd:"" help:"Print version information."`
+}
+
+type guardCmd struct {
+	Root string `help:"Working tree root to scan." default:"."`
+	JSON bool   `help:"Emit JSON." default:"true" negatable:""`
+}
+
+func (c *guardCmd) Run(cc commandContext) error {
+	res, err := guard.Run(c.Root)
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	if !res.OK {
+		if c.JSON {
+			_ = writeJSON(cc.stderr, res)
+		} else {
+			for _, f := range res.Findings {
+				fmt.Fprintf(cc.stderr, "guard: %s — %s\n", f.Path, f.Reason)
+			}
+		}
+		return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: fmt.Sprintf("guard: %d findings", len(res.Findings))}
+	}
+	if c.JSON {
+		return writeJSON(cc.stdout, res)
+	}
+	fmt.Fprintf(cc.stdout, "guard: ok (%d files scanned)\n", res.Scanned)
+	return nil
 }
 
 // Run parses args and dispatches to the chosen subcommand. The returned int
@@ -163,6 +193,7 @@ var commandExamples = map[string]string{
 	"show":     "lincrawl show LIN-1 --fields identifier,title,labels --json",
 	"query":    `lincrawl query --graphql 'query { viewer { id name } }' --json`,
 	"export":   "lincrawl export --out ./snapshots/lincrawl.jsonl --json",
+	"guard":    "lincrawl guard --json",
 	"version":  "lincrawl version --json",
 }
 
@@ -310,10 +341,17 @@ type statusCmd struct {
 }
 
 type statusResult struct {
-	Home         string       `json:"home"`
-	DatabasePath string       `json:"database_path"`
-	Exists       bool         `json:"exists"`
-	Counts       store.Counts `json:"counts"`
+	Home         string         `json:"home"`
+	DatabasePath string         `json:"database_path"`
+	Exists       bool           `json:"exists"`
+	Counts       store.Counts   `json:"counts"`
+	Resume       *resumeStatus  `json:"resume,omitempty"`
+}
+
+type resumeStatus struct {
+	State           string `json:"state"`
+	HighWaterMark   string `json:"high_water_mark"`
+	ResumeAvailable bool   `json:"resume_available"`
 }
 
 func (c *statusCmd) Run(cc commandContext) error {
@@ -324,7 +362,7 @@ func (c *statusCmd) Run(cc commandContext) error {
 	res := statusResult{Home: rt.Home, DatabasePath: rt.DatabasePath}
 	if _, err := os.Stat(rt.DatabasePath); err == nil {
 		res.Exists = true
-		s, err := store.Open(rt.DatabasePath)
+		s, err := store.OpenReadOnly(rt.DatabasePath)
 		if err != nil {
 			return err
 		}
@@ -334,6 +372,13 @@ func (c *statusCmd) Run(cc commandContext) error {
 			return err
 		}
 		res.Counts = counts
+		if cur, err := s.LoadCursor("issues.tail"); err == nil && cur.HighWaterMark != "" {
+			res.Resume = &resumeStatus{
+				State:           "active",
+				HighWaterMark:   cur.HighWaterMark,
+				ResumeAvailable: true,
+			}
+		}
 	}
 	if c.JSON {
 		return writeProjected(cc.stdout, res, c.Fields)
@@ -397,6 +442,12 @@ func (c *syncCmd) Run(cc commandContext) error {
 			"note": "dry-run: would read Snapshot or NDJSON envelopes from stdin and ingest",
 		})
 	}
+
+	lck, err := lock.Acquire(rt.DatabasePath)
+	if err != nil {
+		return wrapErr(err, "config", ExitConfig)
+	}
+	defer lck.Release()
 
 	s, err := store.Open(rt.DatabasePath)
 	if err != nil {
@@ -621,7 +672,7 @@ func (c *searchCmd) Run(cc commandContext) error {
 	if err != nil {
 		return wrapErr(err, "config", ExitConfig)
 	}
-	s, err := store.Open(rt.DatabasePath)
+	s, err := store.OpenReadOnly(rt.DatabasePath)
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
@@ -707,7 +758,7 @@ func (c *showCmd) Run(cc commandContext) error {
 	if err != nil {
 		return wrapErr(err, "config", ExitConfig)
 	}
-	s, err := store.Open(rt.DatabasePath)
+	s, err := store.OpenReadOnly(rt.DatabasePath)
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
@@ -805,7 +856,7 @@ func (c *exportCmd) Run(cc commandContext) error {
 	if err != nil {
 		return wrapErr(err, "config", ExitConfig)
 	}
-	s, err := store.Open(rt.DatabasePath)
+	s, err := store.OpenReadOnly(rt.DatabasePath)
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}

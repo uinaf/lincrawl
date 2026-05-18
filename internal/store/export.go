@@ -121,30 +121,39 @@ FROM issues ORDER BY id`)
 	if err != nil {
 		return count, err
 	}
-	defer issueRows.Close()
+	var issues []linear.Issue
 	for issueRows.Next() {
 		var iss linear.Issue
 		if err := issueRows.Scan(&iss.ID, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.TeamID, &iss.ProjectID, &iss.StateID, &iss.AssigneeID, &iss.CreatorID,
 			&iss.Priority, &iss.CreatedAt, &iss.UpdatedAt); err != nil {
+			issueRows.Close()
 			return count, err
 		}
-		labels, err := s.issueLabelIDs(iss.ID)
+		issues = append(issues, iss)
+	}
+	if err := issueRows.Err(); err != nil {
+		issueRows.Close()
+		return count, err
+	}
+	issueRows.Close()
+	for i := range issues {
+		labels, err := s.issueLabelIDs(issues[i].ID)
 		if err != nil {
-			return count, fmt.Errorf("export labels %s: %w", iss.ID, err)
+			return count, fmt.Errorf("export labels %s: %w", issues[i].ID, err)
 		}
-		iss.LabelIDs = labels
-		comments, err := s.issueComments(iss.ID)
+		issues[i].LabelIDs = labels
+		comments, err := s.issueComments(issues[i].ID)
 		if err != nil {
-			return count, fmt.Errorf("export comments %s: %w", iss.ID, err)
+			return count, fmt.Errorf("export comments %s: %w", issues[i].ID, err)
 		}
-		iss.Comments = comments
-		if err := enc.Encode(envelope{Kind: "issue", Item: iss}); err != nil {
+		issues[i].Comments = comments
+		if err := enc.Encode(envelope{Kind: "issue", Item: issues[i]}); err != nil {
 			return count, err
 		}
 		count++
 	}
-	return count, issueRows.Err()
+	return count, nil
 }
 
 func (s *Store) issueLabelIDs(issueID string) ([]string, error) {

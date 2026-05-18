@@ -8,6 +8,8 @@
 package store
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,15 +20,21 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	ckstore "github.com/openclaw/crawlkit/store"
 
 	"github.com/uinaf/lincrawl/internal/linear"
 )
 
+// SchemaVersion is the current lincrawl SQLite schema version. Bumped when
+// the on-disk shape changes; crawlkit/store refuses to open a db whose
+// `schema_migrations` exceeds this number.
+const SchemaVersion = 1
+
 // Store wraps a single SQLite database used as the local lincrawl archive.
 type Store struct {
-	db   *sql.DB
-	path string
+	inner *ckstore.Store
+	db    *sql.DB
+	path  string
 }
 
 // Open opens (or creates) the SQLite archive at path and applies the schema.
@@ -39,38 +47,49 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)"
-	db, err := sql.Open("sqlite", dsn)
+	inner, err := ckstore.Open(context.Background(), ckstore.Options{
+		Path:          path,
+		Schema:        schemaSQL,
+		SchemaVersion: SchemaVersion,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	s := &Store{db: db, path: path}
-	if err := s.applySchema(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	// SQLite creates db / -wal / -shm at the process umask (often 0644).
-	// Force private mode after creation to match the directory.
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+	// crawlkit chmod 0600 the .db file but not -wal / -shm.
+	for _, p := range []string{path + "-wal", path + "-shm"} {
 		if _, err := os.Stat(p); err == nil {
 			if chmodErr := os.Chmod(p, 0o600); chmodErr != nil {
-				_ = db.Close()
+				_ = inner.Close()
 				return nil, chmodErr
 			}
 		}
 	}
-	return s, nil
+	return &Store{inner: inner, db: inner.DB(), path: path}, nil
+}
+
+// OpenReadOnly opens an existing SQLite archive in read-only mode.
+// search/show/status/export use this to avoid contending with a concurrent
+// writer holding the WAL.
+func OpenReadOnly(path string) (*Store, error) {
+	if path == "" {
+		return nil, errors.New("store: empty path")
+	}
+	inner, err := ckstore.OpenReadOnly(context.Background(), path)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{inner: inner, db: inner.DB(), path: path}, nil
 }
 
 // Close releases the underlying database handle.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return s.inner.Close() }
 
 // Path returns the on-disk location for status output.
 func (s *Store) Path() string { return s.path }
+
+// DB exposes the underlying handle for callers that need direct access
+// (e.g. crawlkit/state.New). Callers must not Close it.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // Counts summarises how many of each entity the archive holds.
 type Counts struct {
@@ -148,16 +167,19 @@ func (s *Store) Search(query string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	// bm25 column weights: identifier 0, title 10, description 5, comments 1.
+	// Title hits dominate so an issue with the query word in its title beats
+	// a comment that quotes it five times.
 	const sqlText = `
 SELECT i.id, i.identifier, i.title, COALESCE(t.key,''), COALESCE(w.name,''),
        COALESCE(w.type,''), i.updated_at,
-       snippet(issue_fts, 1, '<<', '>>', '…', 12), bm25(issue_fts)
+       snippet(issue_fts, 2, '<<', '>>', '…', 16), bm25(issue_fts, 0.0, 10.0, 5.0, 1.0)
 FROM issue_fts
 JOIN issues i ON i.rowid = issue_fts.rowid
 LEFT JOIN teams t ON t.id = i.team_id
 LEFT JOIN workflow_states w ON w.id = i.state_id
 WHERE issue_fts MATCH ?
-ORDER BY bm25(issue_fts) ASC
+ORDER BY bm25(issue_fts, 0.0, 10.0, 5.0, 1.0) ASC
 LIMIT ?`
 	rows, err := s.db.Query(sqlText, q, limit)
 	if err != nil {
@@ -171,9 +193,40 @@ LIMIT ?`
 			&r.StateName, &r.StateType, &r.UpdatedAt, &r.Snippet, &r.Score); err != nil {
 			return nil, err
 		}
+		r.Snippet = SafeSnippet(r.Snippet, 240)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SafeSnippet strips control characters and collapses internal whitespace so
+// FTS5 snippets stay one line of UTF-8 text fit for terminals + JSON.
+func SafeSnippet(in string, maxBytes int) string {
+	if in == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(in))
+	lastSpace := false
+	for _, r := range in {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+		case r < 0x20 || r == 0x7f:
+			continue
+		default:
+			b.WriteRune(r)
+			lastSpace = r == ' '
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if maxBytes > 0 && len(out) > maxBytes {
+		out = out[:maxBytes] + "…"
+	}
+	return out
 }
 
 // IssueRecord is the show payload: an Issue plus resolved team key, state,
@@ -293,15 +346,31 @@ ORDER BY created_at, id`, issueID)
 }
 
 func (s *Store) SaveCursor(scope, cursor, highWaterMark string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`
-INSERT INTO sync_state(scope, cursor, high_water_mark, updated_at)
-VALUES(?,?,?,?)
-ON CONFLICT(scope) DO UPDATE SET
-  cursor=excluded.cursor,
-  high_water_mark=excluded.high_water_mark,
-  updated_at=excluded.updated_at`, scope, cursor, highWaterMark, now)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	entityType, entityID := splitScope(scope)
+	payload, err := json.Marshal(cursorPayload{Cursor: cursor, HighWaterMark: highWaterMark})
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+INSERT INTO sync_state(source_name, entity_type, entity_id, value, updated_at)
+VALUES(?,?,?,?,?)
+ON CONFLICT(source_name, entity_type, entity_id) DO UPDATE SET
+  value=excluded.value,
+  updated_at=excluded.updated_at`, "linear", entityType, entityID, string(payload), now)
 	return err
+}
+
+type cursorPayload struct {
+	Cursor        string `json:"cursor"`
+	HighWaterMark string `json:"high_water_mark"`
+}
+
+func splitScope(scope string) (entityType, entityID string) {
+	if idx := strings.IndexByte(scope, '.'); idx >= 0 {
+		return scope[:idx], scope[idx+1:]
+	}
+	return scope, "default"
 }
 
 type SyncState struct {
@@ -312,15 +381,28 @@ type SyncState struct {
 }
 
 func (s *Store) LoadCursor(scope string) (SyncState, error) {
-	row := s.db.QueryRow(`SELECT scope, cursor, high_water_mark, updated_at FROM sync_state WHERE scope = ?`, scope)
-	var st SyncState
-	if err := row.Scan(&st.Scope, &st.Cursor, &st.HighWaterMark, &st.UpdatedAt); err != nil {
+	entityType, entityID := splitScope(scope)
+	row := s.db.QueryRow(`
+SELECT value, updated_at FROM sync_state
+WHERE source_name = ? AND entity_type = ? AND entity_id = ?`,
+		"linear", entityType, entityID)
+	var value, updatedAt string
+	if err := row.Scan(&value, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SyncState{Scope: scope}, nil
 		}
 		return SyncState{}, err
 	}
-	return st, nil
+	var payload cursorPayload
+	if err := json.Unmarshal([]byte(value), &payload); err != nil {
+		return SyncState{}, fmt.Errorf("sync_state value: %w", err)
+	}
+	return SyncState{
+		Scope:         scope,
+		Cursor:        payload.Cursor,
+		HighWaterMark: payload.HighWaterMark,
+		UpdatedAt:     updatedAt,
+	}, nil
 }
 
 // IngestStream reads either a single Snapshot JSON document or an NDJSON
@@ -512,11 +594,20 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name, state=excluded.state, updated_
 		if err := stubMissingRefs(tx, iss); err != nil {
 			return err
 		}
+		newHash := issueContentHash(iss)
+		var existingHash string
+		err := tx.QueryRow(`SELECT content_hash FROM issues WHERE id = ?`, iss.ID).Scan(&existingHash)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read content_hash: %w", err)
+		}
+		if newHash != "" && newHash == existingHash {
+			continue
+		}
 		if _, err := tx.Exec(`
 INSERT INTO issues(id, identifier, title, description, team_id, project_id,
-                   state_id, assignee_id, creator_id, priority,
+                   state_id, assignee_id, creator_id, priority, content_hash,
                    created_at, updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   identifier=excluded.identifier,
   title=excluded.title,
@@ -527,11 +618,12 @@ ON CONFLICT(id) DO UPDATE SET
   assignee_id=excluded.assignee_id,
   creator_id=excluded.creator_id,
   priority=excluded.priority,
+  content_hash=excluded.content_hash,
   created_at=excluded.created_at,
   updated_at=excluded.updated_at`,
 			iss.ID, iss.Identifier, iss.Title, iss.Description, nilIfEmpty(iss.TeamID),
 			nilIfEmpty(iss.ProjectID), nilIfEmpty(iss.StateID), nilIfEmpty(iss.AssigneeID),
-			nilIfEmpty(iss.CreatorID), iss.Priority, iss.CreatedAt, iss.UpdatedAt,
+			nilIfEmpty(iss.CreatorID), iss.Priority, newHash, iss.CreatedAt, iss.UpdatedAt,
 		); err != nil {
 			return fmt.Errorf("issues: %w", err)
 		}
@@ -567,6 +659,59 @@ ON CONFLICT(id) DO UPDATE SET
 		}
 	}
 	return tx.Commit()
+}
+
+func issueContentHash(iss linear.Issue) string {
+	h := sha256.New()
+	io.WriteString(h, iss.Identifier)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.Title)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.Description)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.TeamID)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.ProjectID)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.StateID)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.AssigneeID)
+	h.Write([]byte{0})
+	io.WriteString(h, iss.CreatorID)
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "p=%d", iss.Priority)
+	h.Write([]byte{0})
+	for _, lid := range iss.LabelIDs {
+		io.WriteString(h, lid)
+		h.Write([]byte{1})
+	}
+	h.Write([]byte{0})
+	for _, c := range iss.Comments {
+		io.WriteString(h, c.ID)
+		h.Write([]byte{1})
+		io.WriteString(h, c.AuthorID)
+		h.Write([]byte{1})
+		io.WriteString(h, c.Body)
+		h.Write([]byte{1})
+		io.WriteString(h, c.UpdatedAt)
+		h.Write([]byte{2})
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// StoreRawBlob persists a raw provider payload keyed by sha256 for replay
+// and future schema migrations. Duplicates are no-ops.
+func (s *Store) StoreRawBlob(kind, entityID string, payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	sum := sha256.Sum256(payload)
+	_, err := s.db.Exec(`
+INSERT INTO raw_blobs(sha256, kind, entity_id, payload, ingested_at)
+VALUES(?,?,?,?,?)
+ON CONFLICT(sha256) DO NOTHING`,
+		fmt.Sprintf("%x", sum[:]), kind, entityID, string(payload), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func stubMissingRefs(tx *sql.Tx, iss linear.Issue) error {
@@ -677,6 +822,7 @@ CREATE TABLE IF NOT EXISTS issues (
   assignee_id TEXT,
   creator_id TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
+  content_hash TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(team_id) REFERENCES teams(id),
@@ -688,6 +834,10 @@ CREATE TABLE IF NOT EXISTS issues (
 
 CREATE INDEX IF NOT EXISTS issues_updated_at_idx ON issues(updated_at);
 CREATE INDEX IF NOT EXISTS issues_team_idx ON issues(team_id);
+CREATE INDEX IF NOT EXISTS issues_team_updated_idx ON issues(team_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS issues_state_updated_idx ON issues(state_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS issues_assignee_updated_idx ON issues(assignee_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS issues_project_updated_idx ON issues(project_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS issue_labels (
   issue_id TEXT NOT NULL,
@@ -709,6 +859,16 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE INDEX IF NOT EXISTS comments_issue_idx ON comments(issue_id);
+CREATE INDEX IF NOT EXISTS comments_issue_created_idx ON comments(issue_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS raw_blobs (
+  sha256 TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  ingested_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS raw_blobs_entity_idx ON raw_blobs(kind, entity_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS issue_fts USING fts5 (
   identifier, title, description, comments,
@@ -716,17 +876,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS issue_fts USING fts5 (
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
-  scope TEXT PRIMARY KEY,
-  cursor TEXT NOT NULL DEFAULT '',
-  high_water_mark TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL DEFAULT ''
+  source_name TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (source_name, entity_type, entity_id)
 );
+CREATE INDEX IF NOT EXISTS idx_sync_state_updated_at ON sync_state(updated_at DESC);
 `
-
-func (s *Store) applySchema() error {
-	_, err := s.db.Exec(schemaSQL)
-	if err != nil {
-		return fmt.Errorf("schema: %w", err)
-	}
-	return nil
-}
