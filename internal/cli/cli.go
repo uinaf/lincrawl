@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -990,6 +989,15 @@ func validatedOutPath(out, cwd string) (string, error) {
 	return abs, nil
 }
 
+type archiveResult struct {
+	Mode    string `json:"mode"`
+	Fixture string `json:"fixture,omitempty"`
+	Out     string `json:"out"`
+	Records int    `json:"records"`
+	Bytes   int64  `json:"bytes,omitempty"`
+	DryRun  bool   `json:"dry_run,omitempty"`
+}
+
 func (c *archiveCmd) Run(cc commandContext) error {
 	if c.Fixture == "" {
 		return usageErr("archive: --fixture is required (use `publish` to archive the local store)")
@@ -1002,19 +1010,9 @@ func (c *archiveCmd) Run(cc commandContext) error {
 	if err != nil {
 		return err
 	}
-	snap, err := linear.LoadFixture(fixtureAbs)
-	if err != nil {
-		return wrapErr(err, "validation", ExitValidation)
-	}
-	records := archive.SnapshotRecords(snap)
-	if c.DryRun {
-		return writeJSON(cc.stdout, map[string]any{
-			"mode":     "archive-fixture",
-			"fixture":  fixtureAbs,
-			"records":  len(records),
-			"out":      c.Out,
-		})
-	}
+	// Resolve recipient + out path BEFORE dry-run short-circuit so the
+	// plan reflects every preflight failure mode the real run would
+	// hit.
 	recipient, err := resolveRecipient(c.Recipient)
 	if err != nil {
 		return err
@@ -1023,11 +1021,35 @@ func (c *archiveCmd) Run(cc commandContext) error {
 	if err != nil {
 		return err
 	}
+	snap, err := linear.LoadFixture(fixtureAbs)
+	if err != nil {
+		return wrapErr(err, "validation", ExitValidation)
+	}
+	records := archive.SnapshotRecords(snap)
+	if c.DryRun {
+		return writeJSON(cc.stdout, archiveResult{
+			Mode: "archive-fixture", Fixture: fixtureAbs, Out: outAbs,
+			Records: len(records), DryRun: true,
+		})
+	}
 	if err := archive.WriteEncryptedJSONL(outAbs, recipient, records); err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
+	_ = recipient // keep the type for later; written via WriteEncryptedJSONL
 	fi, _ := os.Stat(outAbs)
-	return writeJSON(cc.stdout, map[string]any{"out": outAbs, "records": len(records), "bytes": fi.Size()})
+	return writeJSON(cc.stdout, archiveResult{
+		Mode: "archive-fixture", Fixture: fixtureAbs, Out: outAbs,
+		Records: len(records), Bytes: fi.Size(),
+	})
+}
+
+type publishResult struct {
+	Mode     string `json:"mode"`
+	Database string `json:"database,omitempty"`
+	Out      string `json:"out"`
+	Records  int    `json:"records"`
+	Bytes    int64  `json:"bytes,omitempty"`
+	DryRun   bool   `json:"dry_run,omitempty"`
 }
 
 func (c *publishCmd) Run(cc commandContext) error {
@@ -1038,6 +1060,14 @@ func (c *publishCmd) Run(cc commandContext) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
+	}
+	recipient, err := resolveRecipient(c.Recipient)
+	if err != nil {
+		return err
+	}
+	outAbs, err := validatedOutPath(c.Out, cwd)
+	if err != nil {
+		return err
 	}
 	s, err := store.OpenReadOnly(rt.DatabasePath)
 	if err != nil {
@@ -1050,29 +1080,29 @@ func (c *publishCmd) Run(cc commandContext) error {
 	}
 	records := archive.SnapshotRecords(snap)
 	if c.DryRun {
-		return writeJSON(cc.stdout, map[string]any{
-			"mode":    "publish",
-			"db":      rt.DatabasePath,
-			"records": len(records),
-			"out":     c.Out,
+		return writeJSON(cc.stdout, publishResult{
+			Mode: "publish", Database: rt.DatabasePath, Out: outAbs,
+			Records: len(records), DryRun: true,
 		})
-	}
-	recipient, err := resolveRecipient(c.Recipient)
-	if err != nil {
-		return err
-	}
-	outAbs, err := validatedOutPath(c.Out, cwd)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(outAbs), 0o700); err != nil {
-		return wrapErr(err, "internal", ExitInternal)
 	}
 	if err := archive.WriteEncryptedJSONL(outAbs, recipient, records); err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
+	_ = recipient
 	fi, _ := os.Stat(outAbs)
-	return writeJSON(cc.stdout, map[string]any{"out": outAbs, "records": len(records), "bytes": fi.Size()})
+	return writeJSON(cc.stdout, publishResult{
+		Mode: "publish", Database: rt.DatabasePath, Out: outAbs,
+		Records: len(records), Bytes: fi.Size(),
+	})
+}
+
+type importResult struct {
+	Mode        string         `json:"mode"`
+	In          string         `json:"in"`
+	Records     int            `json:"records"`
+	Counts      store.Counts   `json:"counts"`
+	WouldIngest map[string]int `json:"would_ingest,omitempty"`
+	DryRun      bool           `json:"dry_run,omitempty"`
 }
 
 func (c *importCmd) Run(cc commandContext) error {
@@ -1083,6 +1113,10 @@ func (c *importCmd) Run(cc commandContext) error {
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
+	// --in is intentionally NOT sandboxed under CWD — operators need to
+	// import from a tenant store mount that lives anywhere on disk.
+	// The sandbox guarantees (path traversal rejection, control chars)
+	// in validateInputPath still apply.
 	inAbs, err := validateInputPath(c.In, cwd)
 	if err != nil {
 		return err
@@ -1100,11 +1134,9 @@ func (c *importCmd) Run(cc commandContext) error {
 		return wrapErr(err, "validation", ExitValidation)
 	}
 	if c.DryRun {
-		return writeJSON(cc.stdout, map[string]any{
-			"mode":         "import",
-			"in":           inAbs,
-			"records":      len(records),
-			"would_ingest": snapshotCounts(snap),
+		return writeJSON(cc.stdout, importResult{
+			Mode: "import", In: inAbs, Records: len(records),
+			WouldIngest: snapshotCounts(snap), DryRun: true,
 		})
 	}
 	rt, err := config.LoadRuntime()
@@ -1127,11 +1159,12 @@ func (c *importCmd) Run(cc commandContext) error {
 	if err := s.IngestSnapshot(snap); err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
-	counts, _ := s.Counts()
-	return writeJSON(cc.stdout, map[string]any{
-		"in":      inAbs,
-		"records": len(records),
-		"counts":  counts,
+	counts, err := s.Counts()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
+	return writeJSON(cc.stdout, importResult{
+		Mode: "import", In: inAbs, Records: len(records), Counts: counts,
 	})
 }
 
@@ -1169,11 +1202,10 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 		return wrapErr(err, "validation", ExitValidation)
 	}
 	if c.DryRun {
-		return writeJSON(cc.stdout, map[string]any{
-			"mode":      "subscribe",
-			"store":     rootAbs,
-			"snapshots": snaps,
-			"note":      "dry-run: would decrypt and ingest each snapshot in order",
+		return writeJSON(cc.stdout, subscribeResult{
+			Mode: "subscribe", Store: rootAbs,
+			Snapshots: len(snaps), SnapshotPlan: snaps,
+			DryRun: true,
 		})
 	}
 	identity, err := resolveIdentity(c.Identity)
@@ -1221,13 +1253,22 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 	if err != nil {
 		return wrapErr(err, "internal", ExitInternal)
 	}
-	return writeJSON(cc.stdout, map[string]any{
-		"store":     rootAbs,
-		"snapshots": len(snaps),
-		"ingested":  ingested,
-		"records":   totalRecords,
-		"counts":    counts,
+	return writeJSON(cc.stdout, subscribeResult{
+		Mode: "subscribe", Store: rootAbs,
+		Snapshots: len(snaps), Ingested: ingested,
+		Records: totalRecords, Counts: counts,
 	})
+}
+
+type subscribeResult struct {
+	Mode         string                       `json:"mode"`
+	Store        string                       `json:"store"`
+	Snapshots    int                          `json:"snapshots"`
+	Ingested     int                          `json:"ingested,omitempty"`
+	Records      int                          `json:"records,omitempty"`
+	Counts       store.Counts                 `json:"counts,omitempty"`
+	SnapshotPlan []tenantstore.VerifiedSnapshot `json:"snapshot_plan,omitempty"`
+	DryRun       bool                         `json:"dry_run,omitempty"`
 }
 
 func snapshotCounts(snap linear.Snapshot) map[string]int {
