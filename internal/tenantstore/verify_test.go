@@ -16,15 +16,22 @@ func writeManifest(t *testing.T, root string, m Manifest) {
 	}
 }
 
-func TestVerifyEmptyManifest(t *testing.T) {
-	root := t.TempDir()
-	writeManifest(t, root, Manifest{SchemaVersion: "lincrawl.store.v1", Snapshots: []Snapshot{}})
-	res, err := Verify(root)
-	if err != nil {
-		t.Fatal(err)
+func TestVerifyAcceptsListedSchemaVersions(t *testing.T) {
+	// Pin the test against the constant so changes to AcceptedSchemaVersions
+	// surface as a single failure rather than 11 hard-coded ones.
+	for _, v := range AcceptedSchemaVersions {
+		root := t.TempDir()
+		writeManifest(t, root, Manifest{SchemaVersion: v, Snapshots: []Snapshot{}})
+		res, err := Verify(root)
+		if err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+		if !res.OK {
+			t.Fatalf("%s should be accepted: %v", v, res.Findings)
+		}
 	}
-	if !res.OK {
-		t.Fatalf("expected ok, got findings: %v", res.Findings)
+	if got := len(AcceptedSchemaVersions); got != 2 {
+		t.Fatalf("AcceptedSchemaVersions = %d, want 2 (lincrawl.store.v1 + putio.lincrawl.store.v1)", got)
 	}
 }
 

@@ -304,6 +304,58 @@ func TestImportMissingInIsUsageError(t *testing.T) {
 	}
 }
 
+func TestArchiveAndImportHappyPath(t *testing.T) {
+	// Generate an X25519 identity in-process so the CLI exercises the
+	// real recipient/identity resolution and the encrypt+decrypt path.
+	identity := mustNewIdentity(t)
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", identity.Recipient)
+	t.Setenv("LINCRAWL_AGE_IDENTITY", identity.Secret)
+
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	out := "./out.jsonl.zst.age"
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"archive", "--fixture", fixture, "--out", out, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("archive exit=%d stderr=%s", code, stderr.String())
+	}
+	var archiveOut struct {
+		Records int    `json:"records"`
+		Out     string `json:"out"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &archiveOut); err != nil {
+		t.Fatalf("archive JSON: %v\n%s", err, stdout.String())
+	}
+	if archiveOut.Records == 0 {
+		t.Fatalf("archive reported 0 records: %s", stdout.String())
+	}
+	// Now import back into a fresh home.
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"import", "--in", out, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("import exit=%d stderr=%s", code, stderr.String())
+	}
+	var importOut struct {
+		Records int            `json:"records"`
+		Counts  map[string]int `json:"counts"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &importOut); err != nil {
+		t.Fatalf("import JSON: %v\n%s", err, stdout.String())
+	}
+	if importOut.Records != archiveOut.Records {
+		t.Fatalf("import records mismatch: archive=%d import=%d", archiveOut.Records, importOut.Records)
+	}
+	if importOut.Counts["issues"] == 0 {
+		t.Fatalf("import did not ingest any issues: %+v", importOut.Counts)
+	}
+}
+
 func TestStoreVerifyEmitsSingleEnvelopeOnFailure(t *testing.T) {
 	// Make a directory without a manifest.json so verify fails.
 	dir := t.TempDir()

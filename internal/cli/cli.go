@@ -968,9 +968,21 @@ func resolveIdentity(flag string) (string, error) {
 		return v, nil
 	}
 	if path := strings.TrimSpace(os.Getenv("LINCRAWL_AGE_IDENTITY_FILE")); path != "" {
-		raw, err := os.ReadFile(path) // #nosec G304 G703 -- operator-supplied identity path outside any sandbox
+		f, err := os.Open(path) // #nosec G304 G703 -- operator-supplied identity path outside any sandbox
 		if err != nil {
 			return "", wrapErr(err, "config", ExitConfig)
+		}
+		defer f.Close()
+		// 64 KiB caps the read for any realistic age/ssh identity material;
+		// a wrong env (e.g. /dev/urandom, /var/log/*) is rejected with a
+		// typed error instead of OOM.
+		const identityMaxBytes = 64 * 1024
+		raw, err := io.ReadAll(io.LimitReader(f, identityMaxBytes+1))
+		if err != nil {
+			return "", wrapErr(err, "config", ExitConfig)
+		}
+		if int64(len(raw)) > identityMaxBytes {
+			return "", configErr(fmt.Sprintf("LINCRAWL_AGE_IDENTITY_FILE %q exceeds %d bytes; not an age/ssh key", path, identityMaxBytes))
 		}
 		return string(raw), nil
 	}
@@ -1184,6 +1196,12 @@ func (c *storeVerifyCmd) Run(cc commandContext) error {
 		return wrapErr(err, "internal", ExitInternal)
 	}
 	if !res.OK {
+		// Emit the full structured Result to stdout so agents keep every
+		// finding + manifest detail, and return a typed error for the
+		// classified envelope on stderr.
+		if jerr := writeJSON(cc.stdout, res); jerr != nil {
+			return wrapErr(jerr, "internal", ExitInternal)
+		}
 		msg := fmt.Sprintf("store verify: %d findings: %s", len(res.Findings), strings.Join(res.Findings, "; "))
 		return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: msg}
 	}
@@ -1236,13 +1254,13 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 	for i, snap := range snaps {
 		records, err := archive.ReadEncryptedJSONL(snap.FullPath, identity)
 		if err != nil {
-			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: decrypt: %w",
-				i+1, len(snaps), snap.Path, err), "internal", ExitInternal)
+			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: decrypt (already-applied: %d): %w",
+				i+1, len(snaps), snap.Path, ingested, err), "internal", ExitInternal)
 		}
 		fragment, err := archive.RecordsSnapshot(records)
 		if err != nil {
-			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: parse: %w",
-				i+1, len(snaps), snap.Path, err), "validation", ExitValidation)
+			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: parse (already-applied: %d): %w",
+				i+1, len(snaps), snap.Path, ingested, err), "validation", ExitValidation)
 		}
 		if err := s.IngestSnapshot(fragment); err != nil {
 			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: ingest (already-applied: %d): %w",
@@ -1258,7 +1276,7 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 	return writeJSON(cc.stdout, subscribeResult{
 		Mode: "subscribe", Store: rootAbs,
 		Snapshots: len(snaps), Ingested: ingested,
-		Records: totalRecords, Counts: counts,
+		Records: totalRecords, Counts: &counts,
 	})
 }
 
@@ -1268,7 +1286,7 @@ type subscribeResult struct {
 	Snapshots    int                            `json:"snapshots"`
 	Ingested     int                            `json:"ingested,omitempty"`
 	Records      int                            `json:"records,omitempty"`
-	Counts       store.Counts                   `json:"counts,omitempty"`
+	Counts       *store.Counts                  `json:"counts,omitempty"`
 	SnapshotPlan []tenantstore.VerifiedSnapshot `json:"snapshot_plan,omitempty"`
 	DryRun       bool                           `json:"dry_run,omitempty"`
 }

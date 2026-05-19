@@ -165,3 +165,19 @@ func jsonBool(t *testing.T, raw []byte, key string) bool {
 
 // guard against unused imports if I remove a helper later
 var _ = strings.TrimSpace
+
+// mustNewIdentity returns a fresh X25519 age identity (recipient + secret
+// strings) for tests that exercise the encrypted snapshot pipeline.
+type testIdentity struct {
+	Recipient string
+	Secret    string
+}
+
+func mustNewIdentity(t *testing.T) testIdentity {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testIdentity{Recipient: id.Recipient().String(), Secret: id.String()}
+}

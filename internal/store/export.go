@@ -40,6 +40,10 @@ func (s *Store) ExportNDJSON(w io.Writer) (int, error) {
 		}
 		count++
 	}
+	if err := teamRows.Err(); err != nil {
+		teamRows.Close()
+		return count, err
+	}
 	teamRows.Close()
 
 	stateRows, err := s.db.Query(`SELECT id, COALESCE(team_id,''), name, type FROM workflow_states ORDER BY id`)
@@ -57,6 +61,10 @@ func (s *Store) ExportNDJSON(w io.Writer) (int, error) {
 			return count, err
 		}
 		count++
+	}
+	if err := stateRows.Err(); err != nil {
+		stateRows.Close()
+		return count, err
 	}
 	stateRows.Close()
 
@@ -76,6 +84,10 @@ func (s *Store) ExportNDJSON(w io.Writer) (int, error) {
 		}
 		count++
 	}
+	if err := userRows.Err(); err != nil {
+		userRows.Close()
+		return count, err
+	}
 	userRows.Close()
 
 	labelRows, err := s.db.Query(`SELECT id, COALESCE(team_id,''), name FROM labels ORDER BY id`)
@@ -94,6 +106,10 @@ func (s *Store) ExportNDJSON(w io.Writer) (int, error) {
 		}
 		count++
 	}
+	if err := labelRows.Err(); err != nil {
+		labelRows.Close()
+		return count, err
+	}
 	labelRows.Close()
 
 	projectRows, err := s.db.Query(`SELECT id, name, state, updated_at FROM projects ORDER BY id`)
@@ -111,6 +127,10 @@ func (s *Store) ExportNDJSON(w io.Writer) (int, error) {
 			return count, err
 		}
 		count++
+	}
+	if err := projectRows.Err(); err != nil {
+		projectRows.Close()
+		return count, err
 	}
 	projectRows.Close()
 

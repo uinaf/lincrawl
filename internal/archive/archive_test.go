@@ -129,6 +129,38 @@ func TestEncryptedRoundTripWithSSHKey(t *testing.T) {
 	}
 }
 
+func TestPriorityZeroSurvivesWire(t *testing.T) {
+	// Linear's priority=0 means "No priority" — a real, common value.
+	// Without omitempty the field must serialize as `"priority":0`; this
+	// is the regression that lock the wire schema.
+	records := SnapshotRecords(linear.Snapshot{
+		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Issues: []linear.Issue{
+			{
+				ID: "i1", Identifier: "LIN-1", Title: "T",
+				TeamID: "t1", StateID: "s1", Priority: 0,
+				CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:01Z",
+			},
+		},
+	})
+	raw, err := JSONLBytes(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"priority":0`)) {
+		t.Fatalf("priority=0 was elided from the wire shape; output:\n%s", raw)
+	}
+	// Round-trip back: Priority must still be 0.
+	got, err := RecordsSnapshot(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Issues) != 1 || got.Issues[0].Priority != 0 {
+		t.Fatalf("priority round-trip: got %+v", got.Issues)
+	}
+}
+
 func TestWriteEncryptedRefusesOverwrite(t *testing.T) {
 	identity, _ := age.GenerateX25519Identity()
 	dir := t.TempDir()
