@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -247,6 +248,57 @@ func TestIngestIssuesUpdatedSinceClientError(t *testing.T) {
 	c.Sleep = func(context.Context, time.Duration) error { return nil }
 	if _, err := IngestIssuesUpdatedSince(context.Background(), s, c, time.Now().Add(-time.Hour), 50, 0); err == nil {
 		t.Fatal("expected client error")
+	}
+}
+
+func TestIngestIssuesUpdatedSinceEmptyPageStallAborts(t *testing.T) {
+	// Server keeps reporting hasNextPage=true with zero issues to trigger
+	// the maxZeroItemRuns guard. Advance the cursor each call so the stall
+	// detector doesn't fire first.
+	calls := int32(0)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		body := fmt.Sprintf(`{"data":{"issues":{
+			"pageInfo":{"endCursor":"c%d","hasNextPage":true},
+			"nodes":[]
+		}}}`, n)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	c := newFastClient(srv)
+	if _, err := IngestIssuesUpdatedSince(context.Background(), s, c, time.Now().Add(-time.Hour), 50, 0); err == nil {
+		t.Fatal("expected zero-page-stall guard error")
+	}
+}
+
+func TestIngestIssuesUpdatedSinceMaxIssuesStopsEarly(t *testing.T) {
+	// Page returns 2 issues per call; with maxIssues=2 the run should stop
+	// after slicing the first page.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":{
+			"pageInfo":{"endCursor":"","hasNextPage":false},
+			"nodes":[
+			  {"id":"i1","identifier":"LIN-1","title":"A","description":"","priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:01Z",
+			   "team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			   "labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			   "comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}},
+			  {"id":"i2","identifier":"LIN-2","title":"B","description":"","priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:02Z",
+			   "team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			   "labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			   "comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}
+			]
+		}}}`))
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	c := newFastClient(srv)
+	res, err := IngestIssuesUpdatedSince(context.Background(), s, c, time.Now().Add(-time.Hour), 50, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IssuesPulled != 1 {
+		t.Fatalf("expected exactly 1 issue, got %d", res.IssuesPulled)
 	}
 }
 

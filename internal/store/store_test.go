@@ -621,6 +621,64 @@ func TestSaveCursorOverwrite(t *testing.T) {
 	}
 }
 
+func TestSearchAfterTableDrop(t *testing.T) {
+	// Triggers the rows.Err() / Scan failure path by removing the joined
+	// tables mid-flight isn't reliable, but a corrupted FTS query at least
+	// hits the rows.Query error return path.
+	s := mustOpen(t)
+	// Drop the issue_fts table so any Search call fails at the SQL layer.
+	if _, err := s.DB().Exec(`DROP TABLE issue_fts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Search("ingest", 10); err == nil {
+		t.Fatal("expected error after FTS table drop")
+	}
+}
+
+func TestSnapshotAfterIssueLabelsTableDrop(t *testing.T) {
+	s := mustOpen(t)
+	snap := linear.Snapshot{
+		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Issues: []linear.Issue{{
+			ID: "i1", Identifier: "LIN-1", Title: "T", TeamID: "t1", StateID: "s1",
+			CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:00Z",
+		}},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`DROP TABLE issue_labels`); err != nil {
+		t.Fatal(err)
+	}
+	// Snapshot() should fail when it tries to read labels.
+	if _, err := s.Snapshot(); err == nil {
+		t.Fatal("expected snapshot error after issue_labels drop")
+	}
+}
+
+func TestExportNDJSONAfterTableDrop(t *testing.T) {
+	s := mustOpen(t)
+	// Seed an issue so the loop reaches issueComments().
+	snap := linear.Snapshot{
+		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Issues: []linear.Issue{{
+			ID: "i1", Identifier: "LIN-1", Title: "T", TeamID: "t1", StateID: "s1",
+			CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:00Z",
+		}},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`DROP TABLE comments`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExportNDJSON(&bytes.Buffer{}); err == nil {
+		t.Fatal("expected error after comments drop")
+	}
+}
+
 func TestSearchAfterCloseErrors(t *testing.T) {
 	s := mustOpen(t)
 	if err := s.DB().Close(); err != nil {
@@ -746,6 +804,24 @@ func TestStoreRawBlobRejectsEmptyKind(t *testing.T) {
 	s := mustOpen(t)
 	if err := s.StoreRawBlob("", "id", []byte("x")); err == nil {
 		t.Skip("StoreRawBlob does not validate empty kind; skipping")
+	}
+}
+
+func TestIngestStreamRejectsInvalidSnapshot(t *testing.T) {
+	s := mustOpen(t)
+	// Looks like a Snapshot, but the issue is missing required fields.
+	body := `{"issues":[{"id":"","identifier":""}]}`
+	if _, err := s.IngestStream(bytes.NewReader([]byte(body)), 0); err == nil {
+		t.Fatal("expected validate error on snapshot with empty issue id")
+	}
+}
+
+func TestIngestStreamPartialEnvelopeError(t *testing.T) {
+	s := mustOpen(t)
+	// First envelope ok, second is malformed JSON.
+	body := `{"kind":"team","item":{"id":"t1","key":"L","name":"L"}}` + "\n" + `{not json`
+	if _, err := s.IngestStream(bytes.NewReader([]byte(body)), 0); err == nil {
+		t.Fatal("expected error mid-stream")
 	}
 }
 

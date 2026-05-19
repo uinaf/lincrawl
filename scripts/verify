@@ -32,11 +32,10 @@ if [[ -z "$total" ]]; then
 fi
 printf 'coverage %.1f%%\n' "$total"
 
-min_coverage="${LINCRAWL_MIN_COVERAGE:-80.0}"
-if awk -v t="$total" -v m="$min_coverage" 'BEGIN { exit (t+0 < m+0) ? 0 : 1 }'; then
-  echo "coverage ${total}% is below the ${min_coverage}% gate (set LINCRAWL_MIN_COVERAGE to override)" >&2
+if awk -v t="$total" 'BEGIN { exit (t+0 < 85.0) ? 0 : 1 }'; then
+  echo "coverage ${total}% is below the 85% gate" >&2
   echo "lowest-coverage symbols:" >&2
-  go tool cover -func="$filtered_out" | awk '$3+0 < 80.0 && $3 != "0.0%" { print "  " $0 }' | head -10 >&2
+  go tool cover -func="$filtered_out" | awk '$3+0 < 85.0 && $3 != "0.0%" { print "  " $0 }' | head -10 >&2
   exit 1
 fi
 

@@ -322,6 +322,64 @@ func TestVersionTextOutput(t *testing.T) {
 	}
 }
 
+func TestStatusReportsResumeFromStoredCursor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":{
+			"pageInfo":{"endCursor":"","hasNextPage":false},
+			"nodes":[
+			  {"id":"i1","identifier":"LIN-1","title":"A","description":"","priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:00Z",
+			   "team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			   "labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			   "comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}
+			]
+		}}}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	t.Setenv("LINCRAWL_LINEAR_BASE_URL", srv.URL)
+	// Seed a cursor by running updated-since once.
+	if code := Run(context.Background(), []string{"sync", "--updated-since", "24h", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	// Status now reports an active resume.
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"status", "--json"}, &stdout, new(bytes.Buffer)); code != 0 {
+		t.Fatal("status")
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte(`"resume"`)) {
+		t.Fatalf("status missing resume: %s", stdout.String())
+	}
+}
+
+func TestSyncResumeWithCursorHappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":{
+			"pageInfo":{"endCursor":"","hasNextPage":false},
+			"nodes":[
+			  {"id":"i1","identifier":"LIN-1","title":"A","description":"","priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:00Z",
+			   "team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			   "labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			   "comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}
+			]
+		}}}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	t.Setenv("LINCRAWL_LINEAR_BASE_URL", srv.URL)
+	// Seed cursor.
+	if code := Run(context.Background(), []string{"sync", "--updated-since", "24h", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	// Now resume — exercises the RFC3339 parse branch.
+	if code := Run(context.Background(), []string{"sync", "--resume", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("resume")
+	}
+}
+
 func TestStatusBeforeAnyDB(t *testing.T) {
 	t.Setenv("LINCRAWL_HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
@@ -1270,6 +1328,40 @@ func TestExportFileTextOutput(t *testing.T) {
 	}
 }
 
+func TestSearchMissingResultsForBuiltinQuery(t *testing.T) {
+	// search --raw with an FTS5 operator forces the raw query path.
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"search", "ingest OR archive", "--raw", "--limit", "5", "--json"}, &stdout, new(bytes.Buffer)); code != 0 {
+		t.Fatal("raw FTS")
+	}
+}
+
+func TestShowByUUID(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	// Seed with a UUID-shaped issue id.
+	fx := filepath.Join(dir, "fx")
+	_ = os.MkdirAll(fx, 0o755)
+	id := "11111111-2222-3333-4444-555555555555"
+	body := `{"teams":[{"id":"t1","key":"LIN","name":"L"}],"states":[{"id":"s1","team_id":"t1","name":"B","type":"backlog"}],"issues":[{"id":"` + id + `","identifier":"LIN-99","title":"T","team_id":"t1","state_id":"s1","createdAt":"2026-05-19T00:00:00Z","updatedAt":"2026-05-19T00:00:00Z"}]}`
+	if err := os.WriteFile(filepath.Join(fx, "snapshot.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run(context.Background(), []string{"sync", "--fixture", fx, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"show", id, "--json"}, &stdout, new(bytes.Buffer)); code != 0 {
+		t.Fatalf("show by UUID exit=%d", code)
+	}
+}
+
 func TestImportMissingIdentityIsConfigError(t *testing.T) {
 	t.Setenv("LINCRAWL_HOME", t.TempDir())
 	t.Setenv("LINCRAWL_AGE_IDENTITY", "")
@@ -1416,6 +1508,126 @@ func TestQueryEmptyAPIKey(t *testing.T) {
 	code := Run(context.Background(), []string{"query", "--graphql", "query{viewer{id}}"}, &stdout, &stderr)
 	if code != ExitConfig {
 		t.Fatalf("exit=%d, want %d", code, ExitConfig)
+	}
+}
+
+func TestSearchUnknownFieldsIsValidationError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	_ = Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer))
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"search", "ingest", "--fields", "nope_not_a_field"}, &stdout, &stderr)
+	if code != ExitValidation {
+		t.Fatalf("exit=%d, want %d", code, ExitValidation)
+	}
+}
+
+func TestShowUnknownFieldsIsValidationError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	_ = Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer))
+	// Use a real identifier so the show resolves before fields validation runs.
+	var sb bytes.Buffer
+	_ = Run(context.Background(), []string{"search", "ingest", "--fields", "identifier", "--json"}, &sb, new(bytes.Buffer))
+	var r struct {
+		Results []struct {
+			Identifier string `json:"identifier"`
+		} `json:"results"`
+	}
+	_ = json.Unmarshal(sb.Bytes(), &r)
+	if len(r.Results) == 0 {
+		t.Skip("no results")
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"show", r.Results[0].Identifier, "--fields", "nope_not_a_field"}, &stdout, &stderr)
+	if code != ExitValidation {
+		t.Fatalf("exit=%d, want %d", code, ExitValidation)
+	}
+}
+
+func TestStatusUnknownFieldsIsValidationError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	_ = Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer))
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"status", "--fields", "nope_not_a_field"}, &stdout, &stderr)
+	if code != ExitValidation {
+		t.Fatalf("exit=%d, want %d", code, ExitValidation)
+	}
+}
+
+func TestSyncMultipleModesIsUsageError(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"sync", "--entities", "--issue", "LIN-1"}, &stdout, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("exit=%d, want %d", code, ExitUsage)
+	}
+}
+
+func TestSyncStdinNDJSONFlow(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	prev := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	defer func() { os.Stdin = prev }()
+	go func() {
+		_, _ = w.Write([]byte(`{"kind":"team","item":{"id":"t1","key":"L","name":"L"}}` + "\n"))
+		_, _ = w.Write([]byte(`{"kind":"state","item":{"id":"s1","team_id":"t1","name":"B","type":"backlog"}}` + "\n"))
+		w.Close()
+	}()
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--stdin", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("ndjson stdin: %d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestStatusFieldsProjection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	_ = Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer))
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"status", "--fields", "counts,exists"}, &stdout, new(bytes.Buffer)); code != 0 {
+		t.Fatalf("status fields: %d", code)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(stdout.Bytes(), &got)
+	if _, ok := got["counts"]; !ok {
+		t.Fatalf("expected counts field: %v", got)
+	}
+}
+
+func TestSearchTextOutputAfterSync(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"search", "ingest", "--no-json"}, &stdout, new(bytes.Buffer)); code != 0 {
+		t.Fatal("search text")
+	}
+	// Text output is tab-separated identifier\ttitle\tsnippet
+	if !bytes.Contains(stdout.Bytes(), []byte("\t")) {
+		t.Fatalf("expected tab-separated text: %q", stdout.String())
+	}
+}
+
+func TestSearchEmptyQueryFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	_ = Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer))
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"search", ""}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for empty query, got %d", code)
 	}
 }
 
