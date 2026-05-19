@@ -225,6 +225,48 @@ func TestIngestStreamRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestSnapshotMaterializesFullGraph(t *testing.T) {
+	s := mustOpen(t)
+	src := linear.Snapshot{
+		Teams:    []linear.Team{{ID: "t1", Key: "LIN", Name: "Lincrawl", UpdatedAt: "2026-05-19T00:00:00Z"}},
+		States:   []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Users:    []linear.User{{ID: "u1", Name: "Sam"}},
+		Labels:   []linear.Label{{ID: "l1", TeamID: "t1", Name: "ingest"}},
+		Projects: []linear.Project{{ID: "p1", Name: "MVP", State: "started", UpdatedAt: "2026-05-19T00:00:00Z"}},
+		Issues: []linear.Issue{
+			{
+				ID: "i1", Identifier: "LIN-1", Title: "T", TeamID: "t1", StateID: "s1",
+				ProjectID: "p1", AssigneeID: "u1", LabelIDs: []string{"l1"}, Priority: 0,
+				CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:01Z",
+				Comments: []linear.Comment{
+					{ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "hi",
+						CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z"},
+				},
+			},
+		},
+	}
+	if err := s.IngestSnapshot(src); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(got.Teams) != 1 || len(got.States) != 1 || len(got.Users) != 1 ||
+		len(got.Labels) != 1 || len(got.Projects) != 1 || len(got.Issues) != 1 {
+		t.Fatalf("counts: %+v", got)
+	}
+	if got.Issues[0].Identifier != "LIN-1" {
+		t.Fatalf("identifier: %q", got.Issues[0].Identifier)
+	}
+	if len(got.Issues[0].LabelIDs) != 1 || got.Issues[0].LabelIDs[0] != "l1" {
+		t.Fatalf("labels lost: %+v", got.Issues[0].LabelIDs)
+	}
+	if len(got.Issues[0].Comments) != 1 || got.Issues[0].Comments[0].ID != "c1" {
+		t.Fatalf("comments lost: %+v", got.Issues[0].Comments)
+	}
+}
+
 func TestPhraseQueryHandlesOperators(t *testing.T) {
 	s := mustOpen(t)
 	snap := linear.Snapshot{

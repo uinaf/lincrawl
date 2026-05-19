@@ -230,6 +230,109 @@ func TestDescribeUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestDescribeIncludesNewCommands(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"describe", "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	var desc struct {
+		Commands []struct {
+			Name    string `json:"name"`
+			Mutates bool   `json:"mutates"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &desc); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"archive":      true,
+		"publish":      true,
+		"import":       true,
+		"store verify": false,
+		"subscribe":    true,
+	}
+	got := map[string]bool{}
+	for _, c := range desc.Commands {
+		got[c.Name] = c.Mutates
+	}
+	for name, mut := range want {
+		gotMut, present := got[name]
+		if !present {
+			t.Errorf("describe missing command %q", name)
+			continue
+		}
+		if gotMut != mut {
+			t.Errorf("command %q mutates=%v, want %v", name, gotMut, mut)
+		}
+	}
+}
+
+func TestArchiveRequiresFixture(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", "age1invalid")
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"archive", "--out", "./out.jsonl.zst.age"}, &out, &errOut); code != ExitUsage {
+		t.Fatalf("exit=%d, want %d (usage)", code, ExitUsage)
+	}
+}
+
+func TestPublishMissingRecipientIsConfigError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", "")
+	// Seed the store so OpenReadOnly succeeds.
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatalf("seed sync failed exit=%d", code)
+	}
+	var out, errOut bytes.Buffer
+	prev, _ := os.Getwd()
+	defer os.Chdir(prev)
+	os.Chdir(dir)
+	code := Run(context.Background(), []string{"publish", "--out", "./out.jsonl.zst.age"}, &out, &errOut)
+	if code != ExitConfig {
+		t.Fatalf("exit=%d, want %d (config)", code, ExitConfig)
+	}
+}
+
+func TestImportMissingInIsUsageError(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"import", "--identity", "x"}, &out, &errOut); code != ExitUsage {
+		t.Fatalf("exit=%d, want %d (usage)", code, ExitUsage)
+	}
+}
+
+func TestStoreVerifyEmitsSingleEnvelopeOnFailure(t *testing.T) {
+	// Make a directory without a manifest.json so verify fails.
+	dir := t.TempDir()
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"store", "verify", dir, "--json"}, &out, &errOut)
+	if code != ExitInternal && code != ExitValidation {
+		t.Fatalf("exit=%d, want validation or internal", code)
+	}
+	// The stderr should hold exactly one JSON object.
+	raw := errOut.Bytes()
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+		t.Fatalf("stderr should start with one JSON object, got:\n%s", raw)
+	}
+	// json.Decoder should consume the entire stderr without leftover input.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var env map[string]any
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if _, ok := env["code"]; !ok {
+		t.Fatalf("envelope missing `code`: %v", env)
+	}
+	// Confirm no trailing second envelope.
+	var leftover map[string]any
+	if err := dec.Decode(&leftover); err == nil {
+		t.Fatalf("expected single envelope, got second: %v", leftover)
+	}
+}
+
 func TestGuardCleanRepoExitsZero(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# clean"), 0o644); err != nil {

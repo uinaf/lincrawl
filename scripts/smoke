@@ -13,13 +13,46 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$home_dir"
+abs_home="$(cd "$home_dir" && pwd)"
+abs_scratch="$(cd "$scratch" && pwd)"
 
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl version --json >/dev/null
-LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl describe --json >/dev/null
+LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl describe --json | grep -q '"name": "store verify"'
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl doctor --offline --json >/dev/null
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl status --json >/dev/null
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl sync --fixture testdata/synthetic --json >/dev/null
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl search "ingest" --json | grep -q '"identifier": "LIN-1"'
 LINCRAWL_HOME="$home_dir" go run ./cmd/lincrawl show LIN-1 --json | grep -q '"identifier": "LIN-1"'
+
+# Exercise the snapshot pipeline end-to-end with a generated recipient/identity.
+bin="$abs_scratch/lincrawl"
+go build -o "$bin" ./cmd/lincrawl
+
+recipient_file="$abs_scratch/recipient.txt"
+identity_file="$abs_scratch/identity.txt"
+# Generate an age key pair via the bundled age cmd.
+go run filippo.io/age/cmd/age-keygen@v1.3.1 -o "$identity_file" 2> "$recipient_file"
+# stderr from age-keygen looks like: "Public key: age1..." — strip prefix.
+recipient="$(awk -F': ' '/^Public key/{print $2}' "$recipient_file")"
+if [ -z "$recipient" ]; then
+  echo "age-keygen did not emit a recipient" >&2; exit 1
+fi
+publish_root="$abs_scratch/store"
+mkdir -p "$publish_root/artifacts/snapshots/full/2026/05"
+snap_path="artifacts/snapshots/full/2026/05/smoke-$(date -u +%Y%m%dT%H%M%SZ).jsonl.zst.age"
+
+(
+  cd "$publish_root"
+  LINCRAWL_HOME="$abs_home" "$bin" publish --recipient "$recipient" --out "$snap_path" --json >/dev/null
+  cat > manifest.json <<EOF
+{"schema_version":"lincrawl.store.v1","snapshots":[{"kind":"full","path":"$snap_path"}]}
+EOF
+  "$bin" store verify "$publish_root" --json >/dev/null
+)
+
+dst_home="$abs_scratch/dst-home"
+mkdir -p "$dst_home"
+LINCRAWL_HOME="$dst_home" "$bin" subscribe "$publish_root" --identity "$(cat "$identity_file")" --json | grep -q '"ingested": 1'
+LINCRAWL_HOME="$dst_home" "$bin" status --json | grep -q '"issues": 3'
 
 echo "smoke ok"
