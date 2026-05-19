@@ -1170,6 +1170,325 @@ func TestSyncFixtureDryRun(t *testing.T) {
 	}
 }
 
+func TestDescribeTextMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"describe", "--no-json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("describe text: %d", code)
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("sync")) {
+		t.Fatalf("text output missing commands: %q", stdout.String())
+	}
+}
+
+func TestDescribeEachKnownCommand(t *testing.T) {
+	// Exercises walkCommands across all known leaf commands. "store verify" is
+	// a grouped subcommand; describe expects a single token, so skip it.
+	for _, name := range []string{"sync", "search", "show", "version", "doctor", "status", "guard", "archive", "publish", "import", "subscribe", "query", "export"} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), []string{"describe", name}, &stdout, &stderr); code != 0 {
+			t.Errorf("describe %s: code=%d stderr=%s", name, code, stderr.String())
+		}
+	}
+}
+
+func TestSyncEntitiesTextOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Query string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case strings.Contains(req.Query, "{ viewer"):
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"u1","name":"S","email":""}}}`))
+		default:
+			// every other entity query returns empty page
+			_, _ = w.Write([]byte(`{"data":{"teams":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"workflowStates":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"users":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"issueLabels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"projects":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}}`))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	t.Setenv("LINCRAWL_LINEAR_BASE_URL", srv.URL)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--entities", "--no-json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("entities text: %d stderr=%s", code, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("sync:")) {
+		t.Fatalf("text output: %q", stdout.String())
+	}
+}
+
+func TestSyncIssueTextOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issue":{
+			"id":"i1","identifier":"LIN-1","title":"T","description":"",
+			"priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:00Z",
+			"team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			"labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			"comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}
+		}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	t.Setenv("LINCRAWL_LINEAR_BASE_URL", srv.URL)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--issue", "LIN-1", "--no-json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("issue text: %d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestSyncUpdatedSinceTextOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	t.Setenv("LINCRAWL_LINEAR_BASE_URL", srv.URL)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--updated-since", "24h", "--no-json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("updated-since text: %d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestExportFileTextOutput(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"export", "--out", "./dump.jsonl", "--no-json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("export text: %d", code)
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("export:")) {
+		t.Fatalf("text output: %q", stdout.String())
+	}
+}
+
+func TestImportMissingIdentityIsConfigError(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_IDENTITY", "")
+	t.Setenv("LINCRAWL_AGE_IDENTITY_FILE", "")
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	// Create a dummy file so --in validation passes
+	if err := os.WriteFile(filepath.Join(wd, "dummy.jsonl.zst.age"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"import", "--in", "./dummy.jsonl.zst.age"}, &stdout, &stderr)
+	if code != ExitConfig {
+		t.Fatalf("exit=%d, want %d", code, ExitConfig)
+	}
+}
+
+func TestImportMissingFileIsInternalError(t *testing.T) {
+	pub := mustNewIdentity(t)
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_IDENTITY", pub.Secret)
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"import", "--in", "./nonexistent.jsonl.zst.age"}, &stdout, &stderr)
+	if code != ExitInternal {
+		t.Fatalf("exit=%d, want %d (internal)", code, ExitInternal)
+	}
+}
+
+func TestSubscribeMissingIdentityIsConfigError(t *testing.T) {
+	t.Setenv("LINCRAWL_AGE_IDENTITY", "")
+	t.Setenv("LINCRAWL_AGE_IDENTITY_FILE", "")
+	// Build a valid manifest layout with one snapshot.
+	root := t.TempDir()
+	dir := filepath.Join(root, "artifacts", "snapshots", "full", "2026", "05")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.jsonl.zst.age"), []byte("c"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"),
+		[]byte(`{"schema_version":"lincrawl.store.v1","snapshots":[{"kind":"full","path":"artifacts/snapshots/full/2026/05/x.jsonl.zst.age"}]}`),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"subscribe", root}, &stdout, &stderr)
+	if code != ExitConfig {
+		t.Fatalf("exit=%d, want %d (config: missing identity)", code, ExitConfig)
+	}
+}
+
+func TestSubscribeStoreVerifyFailureIsValidation(t *testing.T) {
+	pub := mustNewIdentity(t)
+	t.Setenv("LINCRAWL_AGE_IDENTITY", pub.Secret)
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	// manifest points to a missing snapshot
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"),
+		[]byte(`{"schema_version":"lincrawl.store.v1","snapshots":[{"kind":"full","path":"artifacts/snapshots/full/2026/05/missing.jsonl.zst.age"}]}`),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"subscribe", root, "--dry-run"}, &stdout, &stderr)
+	if code != ExitValidation {
+		t.Fatalf("exit=%d, want %d", code, ExitValidation)
+	}
+}
+
+func TestPublishMissingStoreFails(t *testing.T) {
+	pub := mustNewIdentity(t)
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", pub.Recipient)
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"publish", "--out", "./out.jsonl.zst.age"}, &stdout, &stderr)
+	if code != ExitInternal {
+		t.Fatalf("publish without store exit=%d, want %d", code, ExitInternal)
+	}
+}
+
+func TestArchiveDryRunReportsRecords(t *testing.T) {
+	pub := mustNewIdentity(t)
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", pub.Recipient)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"archive", "--fixture", fixture, "--out", "./a.jsonl.zst.age", "--dry-run", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("archive dry-run exit=%d stderr=%s", code, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte(`"dry_run": true`)) {
+		t.Errorf("dry_run flag missing: %s", stdout.String())
+	}
+}
+
+func TestArchiveMissingRecipientIsConfigError(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", "")
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"archive", "--fixture", fixture, "--out", "./a.jsonl.zst.age"}, &stdout, &stderr)
+	if code != ExitConfig {
+		t.Fatalf("exit=%d, want %d", code, ExitConfig)
+	}
+}
+
+func TestQueryFromMissingFile(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	t.Setenv("LINEAR_API_KEY", "lin_api_test")
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"query", "--graphql-file", "./does-not-exist.gql"}, &stdout, &stderr)
+	if code != ExitValidation {
+		t.Fatalf("exit=%d, want %d", code, ExitValidation)
+	}
+}
+
+func TestQueryEmptyAPIKey(t *testing.T) {
+	t.Setenv("LINEAR_API_KEY", "")
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"query", "--graphql", "query{viewer{id}}"}, &stdout, &stderr)
+	if code != ExitConfig {
+		t.Fatalf("exit=%d, want %d", code, ExitConfig)
+	}
+}
+
+func TestExportRunWithoutStore(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"export", "--out", "-"}, &stdout, &stderr)
+	if code != ExitInternal {
+		t.Fatalf("exit=%d, want %d (no store)", code, ExitInternal)
+	}
+}
+
+func TestSearchWithoutStore(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"search", "anything"}, &stdout, &stderr)
+	if code != ExitInternal {
+		t.Fatalf("exit=%d, want %d (no store)", code, ExitInternal)
+	}
+}
+
+func TestImportSecondInvocationIdempotent(t *testing.T) {
+	pub := mustNewIdentity(t)
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", pub.Recipient)
+	t.Setenv("LINCRAWL_AGE_IDENTITY", pub.Secret)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	if code := Run(context.Background(), []string{"publish", "--out", "./out.jsonl.zst.age", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("publish")
+	}
+	importHome := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", importHome)
+	// First import populates the DB.
+	if code := Run(context.Background(), []string{"import", "--in", "./out.jsonl.zst.age", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("first import")
+	}
+	// Second import on top of the same DB must succeed (idempotent ingest).
+	if code := Run(context.Background(), []string{"import", "--in", "./out.jsonl.zst.age", "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("second import")
+	}
+}
+
+func TestArchivePublishTextOutputs(t *testing.T) {
+	pub := mustNewIdentity(t)
+	dir := t.TempDir()
+	t.Setenv("LINCRAWL_HOME", dir)
+	t.Setenv("LINCRAWL_AGE_RECIPIENT", pub.Recipient)
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "synthetic"))
+	if code := Run(context.Background(), []string{"sync", "--fixture", fixture, "--json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("seed")
+	}
+	cwd, _ := os.Getwd()
+	wd := t.TempDir()
+	_ = os.Chdir(wd)
+	defer os.Chdir(cwd)
+	// archive --no-json
+	if code := Run(context.Background(), []string{"archive", "--fixture", fixture, "--out", "./a.jsonl.zst.age", "--no-json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("archive no-json")
+	}
+	// publish --no-json
+	if code := Run(context.Background(), []string{"publish", "--out", "./p.jsonl.zst.age", "--no-json"}, new(bytes.Buffer), new(bytes.Buffer)); code != 0 {
+		t.Fatal("publish no-json")
+	}
+}
+
 func TestSyncDryRunVariants(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"u1","name":"S","email":""}}}`))

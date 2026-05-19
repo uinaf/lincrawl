@@ -152,6 +152,104 @@ func TestIngestFixtureNilStoreReturnsError(t *testing.T) {
 	}
 }
 
+func TestIngestEntitiesPropagatesIngestError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Query string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case strings.Contains(req.Query, "{ viewer"):
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"u1","name":"S"}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{"teams":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"workflowStates":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"users":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"issueLabels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},"projects":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}}`))
+		}
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	// Close the inner DB so IngestSnapshot/Counts fail.
+	_ = s.DB().Close()
+	c := newFastClient(srv)
+	if _, err := IngestEntities(context.Background(), s, c); err == nil {
+		t.Fatal("expected ingest error after DB close")
+	}
+}
+
+func TestStreamIssuesUpdatedSinceIngestError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":{
+			"pageInfo":{"endCursor":"","hasNextPage":false},
+			"nodes":[
+			  {"id":"i1","identifier":"LIN-1","title":"A","description":"","priority":1,"createdAt":"","updatedAt":"2026-05-19T00:00:00Z",
+			   "team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			   "labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			   "comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}}
+			]
+		}}}`))
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	_ = s.DB().Close()
+	c := newFastClient(srv)
+	if _, err := StreamIssuesUpdatedSince(context.Background(), s, c, time.Now().Add(-time.Hour), 50, 0, func(linear.Issue) error { return nil }); err == nil {
+		t.Fatal("expected ingest error after DB close")
+	}
+}
+
+func TestIngestFixtureRejectsBadDir(t *testing.T) {
+	s := mustOpenStore(t)
+	if _, err := IngestFixture(s, "/nonexistent/fixture/path/xyz"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestIngestEntitiesNilClient(t *testing.T) {
+	s := mustOpenStore(t)
+	if _, err := IngestEntities(context.Background(), s, nil); err == nil {
+		t.Fatal("expected guard")
+	}
+}
+
+func TestIngestEntitiesViewerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	c := newFastClient(srv)
+	if _, err := IngestEntities(context.Background(), s, c); err == nil {
+		t.Fatal("expected viewer error")
+	}
+}
+
+func TestIngestIssueByIdentifierClientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fake error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	c := linear.NewClient(srv.URL, "lin_api_test")
+	c.RetryBackoff = time.Millisecond
+	c.MaxAttempts = 1
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+	if _, err := IngestIssueByIdentifier(context.Background(), s, c, "LIN-1"); err == nil {
+		t.Fatal("expected client error")
+	}
+}
+
+func TestIngestIssuesUpdatedSinceClientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fake", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	s := mustOpenStore(t)
+	c := linear.NewClient(srv.URL, "lin_api_test")
+	c.RetryBackoff = time.Millisecond
+	c.MaxAttempts = 1
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+	if _, err := IngestIssuesUpdatedSince(context.Background(), s, c, time.Now().Add(-time.Hour), 50, 0); err == nil {
+		t.Fatal("expected client error")
+	}
+}
+
 func TestStreamIssuesUpdatedSinceCallsOnIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{"issues":{

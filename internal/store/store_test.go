@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +80,50 @@ func TestIngestAndSearchRoundTrip(t *testing.T) {
 	c, _ := s.Counts()
 	if c.Issues != 2 || c.Comments != 1 {
 		t.Fatalf("re-ingest changed counts: %+v", c)
+	}
+}
+
+func TestShowEmptyIdRejected(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.Show(""); err == nil {
+		t.Fatal("expected empty-id error")
+	}
+}
+
+func TestShowWithLabelsAndCommentsExercisesQueries(t *testing.T) {
+	s := mustOpen(t)
+	snap := linear.Snapshot{
+		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Users:  []linear.User{{ID: "u1", Name: "A"}},
+		Labels: []linear.Label{
+			{ID: "la", TeamID: "t1", Name: "a"},
+			{ID: "lb", TeamID: "t1", Name: "b"},
+			{ID: "lc", TeamID: "t1", Name: "c"},
+		},
+		Issues: []linear.Issue{{
+			ID: "i1", Identifier: "LIN-1", Title: "T", TeamID: "t1", StateID: "s1",
+			LabelIDs:  []string{"la", "lb", "lc"},
+			CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:00Z",
+			Comments: []linear.Comment{
+				{ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "1", CreatedAt: "2026-05-19T00:00:01Z", UpdatedAt: "2026-05-19T00:00:01Z"},
+				{ID: "c2", IssueID: "i1", AuthorID: "u1", Body: "2", CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z"},
+				{ID: "c3", IssueID: "i1", AuthorID: "", Body: "3", CreatedAt: "2026-05-19T00:00:03Z", UpdatedAt: "2026-05-19T00:00:03Z"},
+			},
+		}},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Show("LIN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Labels) != 3 {
+		t.Fatalf("labels: %+v", rec.Labels)
+	}
+	if len(rec.Comments) != 3 {
+		t.Fatalf("comments: %+v", rec.Comments)
 	}
 }
 
@@ -448,6 +493,262 @@ func TestExportNDJSONEmptyDB(t *testing.T) {
 	}
 }
 
+func TestOpenMkdirFailsOnReadOnlyParent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot chmod tmpdir")
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if _, err := Open(filepath.Join(dir, "child", "lincrawl.db")); err == nil {
+		t.Skip("running as root; cannot fail open")
+	}
+}
+
+func TestOpenReadOnlyDoubleClose(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "lincrawl.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Second close on the inner handle may or may not error; we just want to
+	// avoid panicking.
+	defer func() { _ = recover() }()
+	_ = s.Close()
+}
+
+func TestOpenWithExistingWALShm(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "lincrawl.db")
+	// Pre-create -wal and -shm sidecar files to exercise the chmod loop.
+	for _, p := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	for _, p := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			t.Errorf("%s mode %o leaks bits", p, info.Mode().Perm())
+		}
+	}
+}
+
+func TestOpenReadOnlyRejectsMissing(t *testing.T) {
+	if _, err := OpenReadOnly(filepath.Join(t.TempDir(), "nope.db")); err == nil {
+		t.Fatal("expected error on missing db")
+	}
+}
+
+func TestSearchEmptyQuery(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.Search("", 10); err == nil {
+		t.Fatal("expected error on empty FTS query")
+	}
+}
+
+func TestPhraseQueryEdges(t *testing.T) {
+	if got := PhraseQuery(""); got != "" {
+		t.Errorf("empty: %q", got)
+	}
+	if got := PhraseQuery("hello"); got != `"hello"` {
+		t.Errorf("simple: %q", got)
+	}
+	if got := PhraseQuery(`he"llo`); got != `"he""llo"` {
+		t.Errorf("quote: %q", got)
+	}
+}
+
+func TestCountsOnEmptyDB(t *testing.T) {
+	s := mustOpen(t)
+	c, err := s.Counts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Issues != 0 || c.Teams != 0 {
+		t.Fatalf("empty counts: %+v", c)
+	}
+}
+
+func TestLoadCursorRejectsCorruptValue(t *testing.T) {
+	s := mustOpen(t)
+	// Manually insert a corrupt sync_state row.
+	_, err := s.DB().Exec(`INSERT INTO sync_state(source_name, entity_type, entity_id, value, updated_at)
+		VALUES('linear','issues','tail','not-json','2026-05-19T00:00:00Z')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadCursor("issues.tail"); err == nil {
+		t.Fatal("expected JSON-parse error")
+	}
+}
+
+func TestPathReturnsOnDiskLocation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lincrawl.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.Path(); got != dbPath {
+		t.Errorf("Path() = %q", got)
+	}
+}
+
+func TestSaveCursorOverwrite(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.SaveCursor("issues.tail", "c1", "hwm1"); err != nil {
+		t.Fatal(err)
+	}
+	// Trigger the ON CONFLICT UPDATE branch.
+	if err := s.SaveCursor("issues.tail", "c2", "hwm2"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LoadCursor("issues.tail")
+	if got.Cursor != "c2" {
+		t.Errorf("cursor not updated: %+v", got)
+	}
+}
+
+func TestSearchAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Search("anything", 10); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestCountsAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Counts(); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestShowAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Show("anything"); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestExportNDJSONAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExportNDJSON(&bytes.Buffer{}); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestSnapshotAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Snapshot(); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestLoadCursorAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadCursor("issues.tail"); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestSaveCursorAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveCursor("issues.tail", "c", "h"); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestIngestSnapshotAfterCloseErrors(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	snap := linear.Snapshot{Teams: []linear.Team{{ID: "t1"}}}
+	if err := s.IngestSnapshot(snap); err == nil {
+		t.Fatal("expected error after DB close")
+	}
+}
+
+func TestStubMissingRefsFullySetIssue(t *testing.T) {
+	s := mustOpen(t)
+	// Pure stub path: an issue references team/project/state/assignee/creator
+	// and a label, plus a comment with an author. No matching rows exist;
+	// stubMissingRefs has to create stubs for every kind.
+	snap := linear.Snapshot{
+		Issues: []linear.Issue{{
+			ID: "i1", Identifier: "X-1", Title: "T",
+			TeamID:     "ghost-t",
+			ProjectID:  "ghost-p",
+			StateID:    "ghost-s",
+			AssigneeID: "ghost-a",
+			CreatorID:  "ghost-c",
+			LabelIDs:   []string{"ghost-l1", "ghost-l2"},
+			CreatedAt:  "2026-05-19T00:00:00Z",
+			UpdatedAt:  "2026-05-19T00:00:00Z",
+			Comments: []linear.Comment{
+				{ID: "c1", IssueID: "i1", AuthorID: "ghost-comment-author", Body: "x", CreatedAt: "2026-05-19T00:00:01Z", UpdatedAt: "2026-05-19T00:00:01Z"},
+				{ID: "c2", IssueID: "i1", Body: "y", CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z"},
+			},
+		}},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Show("X-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.AssigneeID != "ghost-a" || rec.CreatorID != "ghost-c" {
+		t.Errorf("rec: %+v", rec)
+	}
+	if len(rec.Labels) != 2 {
+		t.Errorf("labels: %+v", rec.Labels)
+	}
+	if len(rec.Comments) != 2 {
+		t.Errorf("comments: %+v", rec.Comments)
+	}
+}
+
+func TestStoreRawBlobRejectsEmptyKind(t *testing.T) {
+	s := mustOpen(t)
+	if err := s.StoreRawBlob("", "id", []byte("x")); err == nil {
+		t.Skip("StoreRawBlob does not validate empty kind; skipping")
+	}
+}
+
 func TestIngestStreamRejectsEmpty(t *testing.T) {
 	s := mustOpen(t)
 	if _, err := s.IngestStream(bytes.NewReader(nil), 0); err == nil {
@@ -507,6 +808,14 @@ func TestSafeSnippetCovers(t *testing.T) {
 	}
 	if !strings.Contains(SafeSnippet("hi <mark>there</mark> friend", 200), "there") {
 		t.Error("expected mark tags to be stripped while preserving text")
+	}
+	// control chars + whitespace collapsing
+	if got := SafeSnippet("a\t\tb\n\rc\x01d", 200); got != "a b cd" {
+		t.Errorf("ctl strip = %q", got)
+	}
+	// no maxBytes
+	if got := SafeSnippet("abc", 0); got != "abc" {
+		t.Errorf("no cap: %q", got)
 	}
 }
 

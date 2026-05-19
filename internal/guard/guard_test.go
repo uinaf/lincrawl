@@ -118,6 +118,85 @@ func TestGitIgnoredSetReadsGitOutput(t *testing.T) {
 	_ = got
 }
 
+func TestGuardFindsGithubToken(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "leak.yml"),
+		[]byte("token: ghp_"+strings.Repeat("a", 32)+"\n"), 0o644))
+	res, _ := Run(dir)
+	if res.OK {
+		t.Fatal("expected gh token finding")
+	}
+}
+
+func TestGuardFindsLinearURL(t *testing.T) {
+	dir := t.TempDir()
+	// Build the URL at runtime so the guard regex doesn't trip on this source.
+	body := "See " + "https://linear" + ".app/tenant/issue/LIN-1\n"
+	must(t, os.WriteFile(filepath.Join(dir, "post.md"), []byte(body), 0o644))
+	res, _ := Run(dir)
+	if res.OK {
+		t.Fatal("expected linear URL finding")
+	}
+}
+
+func TestGuardFindsLinearUUID(t *testing.T) {
+	dir := t.TempDir()
+	uuid := "1d6f6cd0-9d51-4f12-9f3f-" + "cdb1ec3ec3f3"
+	body := `{"workspaceId":"` + uuid + `"}`
+	must(t, os.WriteFile(filepath.Join(dir, "x.json"), []byte(body), 0o644))
+	res, _ := Run(dir)
+	if res.OK {
+		t.Fatal("expected UUID finding outside synthetic")
+	}
+}
+
+func TestGuardSkipsTestdataSyntheticUUID(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "testdata", "synthetic")
+	must(t, os.MkdirAll(sub, 0o755))
+	uuid := "1d6f6cd0-9d51-4f12-9f3f-" + "cdb1ec3ec3f3"
+	body := `{"workspaceId":"` + uuid + `"}`
+	must(t, os.WriteFile(filepath.Join(sub, "x.json"), []byte(body), 0o644))
+	res, _ := Run(dir)
+	if !res.OK {
+		t.Fatalf("synthetic UUID should be ok: %+v", res.Findings)
+	}
+}
+
+func TestGuardRejectsForbiddenDirs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"snapshots", "reports", "screenshots", "transcripts"} {
+		sub := filepath.Join(dir, name)
+		must(t, os.MkdirAll(sub, 0o755))
+		must(t, os.WriteFile(filepath.Join(sub, "x"), []byte("x"), 0o644))
+	}
+	res, _ := Run(dir)
+	if res.OK {
+		t.Fatal("expected forbidden-dir findings")
+	}
+}
+
+func TestGuardSkipsNoiseDirs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"node_modules", "vendor", "tmp", "dist"} {
+		sub := filepath.Join(dir, name)
+		must(t, os.MkdirAll(sub, 0o755))
+		must(t, os.WriteFile(filepath.Join(sub, "leak.db"), []byte("x"), 0o644))
+	}
+	res, _ := Run(dir)
+	if !res.OK {
+		t.Fatalf("expected ok, got findings: %+v", res.Findings)
+	}
+}
+
+func TestGuardEmptyRootDefaultsToCWD(t *testing.T) {
+	// Pass "" to exercise default-to-"." branch.
+	_, err := Run("")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScanContentReadable(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("normal text without secrets"), 0o644); err != nil {

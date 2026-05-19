@@ -189,6 +189,87 @@ func TestParseIdentitiesErrors(t *testing.T) {
 	}
 }
 
+func TestRecordsSnapshotRejectsUnknownType(t *testing.T) {
+	if _, err := RecordsSnapshot([]Record{{SchemaVersion: SchemaVersion, RecordType: "alien"}}); err == nil {
+		t.Fatal("expected unknown-type error")
+	}
+}
+
+func TestRecordsSnapshotRejectsBadSchemaVersion(t *testing.T) {
+	if _, err := RecordsSnapshot([]Record{{SchemaVersion: "wrong.v0", RecordType: "team"}}); err == nil {
+		t.Fatal("expected schema error")
+	}
+}
+
+func TestRecordsSnapshotCommentWithoutIssue(t *testing.T) {
+	if _, err := RecordsSnapshot([]Record{{SchemaVersion: SchemaVersion, RecordType: "comment", ID: "c1", IssueID: "missing"}}); err == nil {
+		t.Fatal("expected orphan-comment error")
+	}
+}
+
+func TestReadJSONLRejectsBadSchemaVersion(t *testing.T) {
+	body := `{"schema_version":"wrong.v0","record_type":"team","id":"t1"}` + "\n"
+	if _, err := ReadJSONL(bytes.NewReader([]byte(body))); err == nil {
+		t.Fatal("expected schema version error")
+	}
+}
+
+func TestReadJSONLDecodeError(t *testing.T) {
+	if _, err := ReadJSONL(bytes.NewReader([]byte("not json"))); err == nil {
+		t.Fatal("expected decode error")
+	}
+}
+
+func TestWriteEncryptedJSONLOpenFailure(t *testing.T) {
+	identity, _ := age.GenerateX25519Identity()
+	// Write to a path inside a missing directory.
+	bad := filepath.Join(t.TempDir(), "no", "such", "dir", "out.jsonl.zst.age")
+	if err := WriteEncryptedJSONL(bad, identity.Recipient().String(), nil); err == nil {
+		t.Fatal("expected os.OpenFile failure")
+	}
+}
+
+func TestWriteEncryptedJSONLCleansUpOnOverwrite(t *testing.T) {
+	identity, _ := age.GenerateX25519Identity()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.jsonl.zst.age")
+	if err := WriteEncryptedJSONL(path, identity.Recipient().String(), SnapshotRecords(sampleSnapshot())); err != nil {
+		t.Fatal(err)
+	}
+	// Second call refuses to clobber but should not delete the existing file
+	// since the cleanup only triggers when *this* call created the file.
+	if err := WriteEncryptedJSONL(path, identity.Recipient().String(), nil); err == nil {
+		t.Fatal("expected O_EXCL failure on existing file")
+	}
+	// Confirm the original is still intact.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("original file vanished: %v", err)
+	}
+}
+
+func TestJSONLBytesEmpty(t *testing.T) {
+	got, err := JSONLBytes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty: %d bytes", len(got))
+	}
+}
+
+func TestSortRecordsStable(t *testing.T) {
+	in := []Record{
+		{RecordType: "issue", Identifier: "B"},
+		{RecordType: "issue", Identifier: "A"},
+		{RecordType: "team", ID: "t1"},
+		{RecordType: "issue", Identifier: "C"},
+	}
+	sortRecords(in)
+	if in[0].RecordType != "issue" || in[0].Identifier != "A" {
+		t.Errorf("sort: %+v", in)
+	}
+}
+
 func TestWriteEncryptedJSONLRecipientError(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteEncryptedJSONL(filepath.Join(dir, "x.age"), "not-a-recipient", nil); err == nil {

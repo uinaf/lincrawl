@@ -507,6 +507,99 @@ func TestFetchIssueByIdentifierPopulatesComments(t *testing.T) {
 	}
 }
 
+func TestFetchIssueByIdentifierDrainsNestedComments(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables map[string]any `json:"variables"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		if _, hasAfter := req.Variables["after"]; hasAfter {
+			_, _ = w.Write([]byte(`{"data":{"issue":{"comments":{
+				"pageInfo":{"endCursor":"","hasNextPage":false},
+				"nodes":[{"id":"c2","user":{"id":"u2"},"body":"b","createdAt":"","updatedAt":""}]
+			}}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"issue":{
+			"id":"i1","identifier":"LIN-42","title":"T","description":"",
+			"priority":1,"createdAt":"","updatedAt":"",
+			"team":null,"project":null,"state":null,"assignee":null,"creator":null,
+			"labels":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]},
+			"comments":{"pageInfo":{"endCursor":"C1","hasNextPage":true},"nodes":[{"id":"c1","user":null,"body":"a","createdAt":"","updatedAt":""}]}
+		}}}`))
+	})
+	iss, err := c.FetchIssueByIdentifier(context.Background(), "LIN-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(iss.Comments) != 2 {
+		t.Fatalf("comments not paginated: %+v", iss.Comments)
+	}
+}
+
+func TestFetchIssueByIdentifierLabelsClientError(t *testing.T) {
+	requestCount := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			// first: issue with hasNext labels
+			_, _ = w.Write([]byte(`{"data":{"issue":{
+				"id":"i1","identifier":"LIN-1","title":"T","description":"",
+				"priority":1,"createdAt":"","updatedAt":"",
+				"team":null,"project":null,"state":null,"assignee":null,"creator":null,
+				"labels":{"pageInfo":{"endCursor":"L1","hasNextPage":true},"nodes":[{"id":"l1"}]},
+				"comments":{"pageInfo":{"endCursor":"","hasNextPage":false},"nodes":[]}
+			}}}`))
+			return
+		}
+		// follow-up labels call: fail
+		http.Error(w, "kaboom", http.StatusInternalServerError)
+	})
+	if _, err := c.FetchIssueByIdentifier(context.Background(), "LIN-1"); err == nil {
+		t.Fatal("expected labels-fetch error")
+	}
+}
+
+func TestQueryHandlesNetworkError(t *testing.T) {
+	c := NewClient("http://127.0.0.1:1", "lin_api_x")
+	c.RetryBackoff = time.Millisecond
+	c.MaxAttempts = 1
+	c.Sleep = func(context.Context, time.Duration) error { return nil }
+	if _, err := c.Query(context.Background(), "query{viewer{id}}", nil); err == nil {
+		t.Fatal("expected connect error")
+	}
+}
+
+func TestQueryErrorOnGraphQLErrors(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
+	})
+	if _, err := c.Query(context.Background(), "query{viewer{id}}", nil); err == nil {
+		t.Fatal("expected graphql error")
+	}
+}
+
+func TestQueryWithVariables(t *testing.T) {
+	var gotVars map[string]any
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables map[string]any `json:"variables"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		gotVars = req.Variables
+		_, _ = w.Write([]byte(`{"data":{"ok":true}}`))
+	})
+	vars := map[string]any{"id": "abc", "first": 10}
+	if _, err := c.Query(context.Background(), "query($id: String!, $first: Int!) { x(id: $id, first: $first) }", vars); err != nil {
+		t.Fatal(err)
+	}
+	if gotVars["id"] != "abc" {
+		t.Errorf("vars not propagated: %+v", gotVars)
+	}
+}
+
 func TestFetchIssueByIdentifierDrainsNestedLabels(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

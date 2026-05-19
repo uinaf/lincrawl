@@ -112,6 +112,81 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+func TestLoadDotEnvMalformedLineReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env.local")
+	if err := os.WriteFile(path, []byte("VALID=ok\nNOT_KEY_VALUE_LINE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadDotEnv(path); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestLoadDotEnvSingleQuotedAndEmptyKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env.local")
+	if err := os.WriteFile(path, []byte("SQ_TEST='single quoted'\nEMPTY_KEY=\n=novalue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Unsetenv("SQ_TEST")
+	if _, _, err := LoadDotEnv(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("SQ_TEST"); got != "single quoted" {
+		t.Errorf("SQ_TEST = %q", got)
+	}
+}
+
+func TestEnsureDirsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	rt := Runtime{Home: dir, ConfigDir: filepath.Join(dir, "config")}
+	if err := EnsureDirs(rt); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDirs(rt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureDirsFailsOnFileCollision(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "blocker"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := Runtime{Home: filepath.Join(dir, "blocker"), ConfigDir: filepath.Join(dir, "blocker", "config")}
+	if err := EnsureDirs(rt); err == nil {
+		t.Fatal("expected EnsureDirs to fail on file collision")
+	}
+}
+
+func TestUnquoteEdges(t *testing.T) {
+	if got := unquote(``); got != "" {
+		t.Errorf("empty: %q", got)
+	}
+	if got := unquote(`x`); got != "x" {
+		t.Errorf("single char: %q", got)
+	}
+	if got := unquote(`"q"`); got != "q" {
+		t.Errorf("doublequoted: %q", got)
+	}
+	if got := unquote(`bare`); got != "bare" {
+		t.Errorf("bare: %q", got)
+	}
+}
+
+func TestLoadRuntimeWithoutLINCRAWLHome(t *testing.T) {
+	t.Setenv("LINCRAWL_HOME", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	rt, err := LoadRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Home == "" {
+		t.Fatal("expected XDG-derived home")
+	}
+}
+
 func TestLoadRuntimeHomeOverride(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LINCRAWL_HOME", dir)

@@ -8,6 +8,65 @@ import (
 	"testing"
 )
 
+func TestVerifyRejectsManifestSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "real.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, ManifestName)); err != nil {
+		t.Skip("symlinks not supported")
+	}
+	res, err := Verify(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || len(res.Findings) == 0 {
+		t.Fatal("expected symlink manifest rejection")
+	}
+}
+
+func TestVerifyRejectsMalformedManifestJSON(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ManifestName), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(root); err == nil {
+		t.Fatal("expected decode error")
+	}
+}
+
+func TestVerifyRejectsEmptyPathSnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, Manifest{
+		SchemaVersion: "lincrawl.store.v1",
+		Snapshots:     []Snapshot{{Kind: "full", Path: ""}},
+	})
+	res, _ := Verify(root)
+	if res.OK {
+		t.Fatal("expected empty-path rejection")
+	}
+}
+
+func TestValidSnapshotPathRejectsBadShape(t *testing.T) {
+	cases := []string{
+		"",
+		"artifacts/snapshots/full/abcd/05/x.jsonl.zst.age",   // bad year
+		"artifacts/snapshots/full/2026/aa/x.jsonl.zst.age",   // bad month
+		"artifacts/snapshots/odd/2026/05/x.jsonl.zst.age",    // bad kind
+		"artifacts/snapshots/full/2026/05/x.txt",             // bad ext
+		"wrong/snapshots/full/2026/05/x.jsonl.zst.age",       // bad top
+		"artifacts/wrong/full/2026/05/x.jsonl.zst.age",       // bad mid
+		"artifacts/snapshots/full/2026/05/x.jsonl.zst.age/y", // too long
+		"artifacts/snapshots/full/2026/05",                   // too short
+	}
+	for _, c := range cases {
+		if validSnapshotPath(c) {
+			t.Errorf("validSnapshotPath(%q) = true, want false", c)
+		}
+	}
+}
+
 func TestVerifiedSnapshotsHappyAndFailure(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "artifacts", "snapshots", "full", "2026", "05")
