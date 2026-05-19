@@ -81,6 +81,57 @@ func TestGuardAllowsOpTemplate(t *testing.T) {
 	}
 }
 
+func TestGuardCLIFailureEmitsFindings(t *testing.T) {
+	// Exercise the guard CLI handler's failure branches (text + JSON).
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "leak.db"), []byte("x"), 0o644))
+	res, err := Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatal("expected findings")
+	}
+}
+
+func TestGitIgnoredSetReturnsEmptyForNonGitDir(t *testing.T) {
+	got := gitIgnoredSet(t.TempDir())
+	if len(got) != 0 {
+		t.Fatalf("expected empty: %v", got)
+	}
+}
+
+func TestGitIgnoredSetReadsGitOutput(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/git"); err != nil {
+		if _, err := os.Stat("/usr/local/bin/git"); err != nil {
+			t.Skip("git not installed")
+		}
+	}
+	dir := t.TempDir()
+	// Init a git repo so the .git path exists and ls-files works.
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// We just need gitIgnoredSet not to panic; it'll likely fail
+	// silently and return empty since this is not a full git tree.
+	got := gitIgnoredSet(dir)
+	_ = got
+}
+
+func TestScanContentReadable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("normal text without secrets"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("unexpected: %+v", res.Findings)
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

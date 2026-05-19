@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+var (
+	_ = os.Setenv
+	_ = strings.HasPrefix
+)
+
 func TestLoadDotEnvSetsMissingKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env.local")
@@ -48,6 +53,62 @@ func TestLoadDotEnvMissingFileIsNoOp(t *testing.T) {
 	}
 	if loaded {
 		t.Fatal("expected loaded=false for missing file")
+	}
+}
+
+func TestLinearAPIKeyTrimsWhitespace(t *testing.T) {
+	t.Setenv("LINEAR_API_KEY", "   secret\n  ")
+	if got := LinearAPIKey(); got != "secret" {
+		t.Fatalf("LinearAPIKey() = %q", got)
+	}
+	t.Setenv("LINEAR_API_KEY", "")
+	if got := LinearAPIKey(); got != "" {
+		t.Fatalf("empty: %q", got)
+	}
+}
+
+func TestEnsureDirsCreatesPaths(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "lincrawl-home")
+	rt := Runtime{Home: dir, ConfigDir: filepath.Join(dir, "config")}
+	if err := EnsureDirs(rt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rt.Home); err != nil {
+		t.Errorf("home not created: %v", err)
+	}
+	if _, err := os.Stat(rt.ConfigDir); err != nil {
+		t.Errorf("config dir not created: %v", err)
+	}
+}
+
+func TestDefaultDataDirRespectsXDG(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/tmp/xdg")
+	got, err := defaultDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join("/tmp/xdg", AppID) {
+		t.Errorf("xdg: %s", got)
+	}
+}
+
+func TestDefaultDataDirFallsBackToHome(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	got, err := defaultDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, filepath.Join(".local", "share", AppID)) {
+		t.Errorf("home fallback: %s", got)
+	}
+}
+
+func TestRedact(t *testing.T) {
+	if Redact(true) != "set" {
+		t.Error("true")
+	}
+	if Redact(false) != "unset" {
+		t.Error("false")
 	}
 }
 

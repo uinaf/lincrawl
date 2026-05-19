@@ -23,13 +23,29 @@ location. `./scripts/smoke` already does this.
 `./scripts/verify` is the local gate. It runs:
 
 1. `go mod tidy` (verifies `go.mod`/`go.sum` are clean)
-2. `go vet ./...`
-3. `go test ./...`
+2. `go test ./... -coverprofile` and fails when total coverage drops below the
+   gate (default 80%, target 90%)
+3. `go vet ./...`
 4. `go test -race ./...`
 5. `./scripts/smoke`
 6. `git diff --check` (trailing whitespace)
 
 CI mirrors the same gate.
+
+### Coverage threshold
+
+Coverage is computed across every non-`cmd/lincrawl` package (the `main()`
+shim is excluded because it cannot be exercised in-process). The verify
+script fails when total coverage drops below `LINCRAWL_MIN_COVERAGE`
+(default `80.0`). The project target is 90% — raise the env var to ratchet
+the floor up as new tests land:
+
+```bash
+LINCRAWL_MIN_COVERAGE=85 ./scripts/verify
+```
+
+When a package falls under 80%, `scripts/verify` prints the ten
+lowest-coverage symbols so you know exactly where to point new tests.
 
 ## Commit style
 

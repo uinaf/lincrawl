@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -158,6 +159,63 @@ func TestPriorityZeroSurvivesWire(t *testing.T) {
 	}
 	if len(got.Issues) != 1 || got.Issues[0].Priority != 0 {
 		t.Fatalf("priority round-trip: got %+v", got.Issues)
+	}
+}
+
+func TestParseRecipientErrors(t *testing.T) {
+	if _, err := ParseRecipient(""); err == nil {
+		t.Error("empty should error")
+	}
+	if _, err := ParseRecipient("age1bogus"); err == nil {
+		t.Error("bogus age recipient should error")
+	}
+	if _, err := ParseRecipient("ssh-rsa AAAA invalid"); err == nil {
+		t.Error("bogus ssh recipient should error")
+	}
+	if _, err := ParseRecipient("plain-string"); err == nil {
+		t.Error("unsupported format should error")
+	}
+}
+
+func TestParseIdentitiesErrors(t *testing.T) {
+	if _, err := ParseIdentities(""); err == nil {
+		t.Error("empty should error")
+	}
+	if _, err := ParseIdentities("AGE-SECRET-KEY-1ZZZ"); err == nil {
+		t.Error("bogus age identity should error")
+	}
+	if _, err := ParseIdentities("-----BEGIN OPENSSH PRIVATE KEY-----\nnotreal\n-----END OPENSSH PRIVATE KEY-----\n"); err == nil {
+		t.Error("bogus ssh identity should error")
+	}
+}
+
+func TestWriteEncryptedJSONLRecipientError(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteEncryptedJSONL(filepath.Join(dir, "x.age"), "not-a-recipient", nil); err == nil {
+		t.Fatal("expected recipient parse failure")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "x.age")); err == nil {
+		t.Fatal("file should not have been created on recipient failure")
+	}
+}
+
+func TestReadEncryptedJSONLMissingFile(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	if _, err := ReadEncryptedJSONL("/nonexistent/path/here.age", id.String()); err == nil {
+		t.Fatal("expected open error")
+	}
+}
+
+func TestReadEncryptedJSONLWrongIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.jsonl.zst.age")
+	idEnc, _ := age.GenerateX25519Identity()
+	idDec, _ := age.GenerateX25519Identity()
+	if err := WriteEncryptedJSONL(path, idEnc.Recipient().String(), SnapshotRecords(sampleSnapshot())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEncryptedJSONL(path, idDec.String()); err == nil {
+		t.Fatal("expected decryption failure with wrong identity")
 	}
 }
 

@@ -20,6 +20,33 @@ func TestAcquireReleaseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAcquireRejectsEmptyPath(t *testing.T) {
+	if _, err := Acquire(""); err == nil {
+		t.Fatal("expected error on empty path")
+	}
+}
+
+func TestNilReleaseIsSafe(t *testing.T) {
+	var l *FileLock
+	if err := l.Release(); err != nil {
+		t.Fatalf("nil release: %v", err)
+	}
+}
+
+func TestReleaseTwiceIsSafe(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lincrawl.db")
+	l, err := Acquire(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatalf("second release should be a no-op: %v", err)
+	}
+}
+
 func TestAcquireRejectsSecondHolder(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "lincrawl.db")
 	first, err := Acquire(dbPath)

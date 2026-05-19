@@ -8,6 +8,63 @@ import (
 	"testing"
 )
 
+func TestVerifiedSnapshotsHappyAndFailure(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "artifacts", "snapshots", "full", "2026", "05")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.jsonl.zst.age"), []byte("c"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, root, Manifest{
+		SchemaVersion: "lincrawl.store.v1",
+		Snapshots: []Snapshot{
+			{Kind: "full", Path: "artifacts/snapshots/full/2026/05/x.jsonl.zst.age"},
+		},
+	})
+	got, err := VerifiedSnapshots(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasSuffix(got[0].FullPath, "x.jsonl.zst.age") {
+		t.Fatalf("verified snapshots: %+v", got)
+	}
+
+	bad := t.TempDir()
+	if _, err := VerifiedSnapshots(bad); err == nil {
+		t.Fatal("expected error when manifest missing")
+	}
+}
+
+func TestIsMonthEdges(t *testing.T) {
+	if !isMonth("01") || !isMonth("12") {
+		t.Error("valid months rejected")
+	}
+	if isMonth("1") || isMonth("aa") {
+		t.Error("invalid months accepted")
+	}
+}
+
+func TestIsYearEdges(t *testing.T) {
+	if !isYear("2026") {
+		t.Error("year rejected")
+	}
+	if isYear("202") || isYear("20266") || isYear("abcd") {
+		t.Error("invalid years accepted")
+	}
+}
+
+func TestSuggestSnapshotPathFallback(t *testing.T) {
+	got, err := SuggestSnapshotPath("delta", "no-date-here.jsonl.zst.age")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, "no-date-here.jsonl.zst.age") {
+		t.Errorf("fallback path = %q", got)
+	}
+}
+
 func writeManifest(t *testing.T, root string, m Manifest) {
 	t.Helper()
 	raw, _ := json.MarshalIndent(m, "", "  ")

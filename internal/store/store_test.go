@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/uinaf/lincrawl/internal/linear"
@@ -225,6 +226,115 @@ func TestIngestStreamRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadCursor(t *testing.T) {
+	s := mustOpen(t)
+	got, err := s.LoadCursor("issues.tail")
+	if err != nil {
+		t.Fatalf("LoadCursor empty: %v", err)
+	}
+	if got.Scope != "issues.tail" || got.Cursor != "" || got.HighWaterMark != "" {
+		t.Fatalf("empty state: %+v", got)
+	}
+	if err := s.SaveCursor("issues.tail", "cursor-1", "2026-05-19T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.LoadCursor("issues.tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cursor != "cursor-1" || got.HighWaterMark != "2026-05-19T00:00:00Z" {
+		t.Fatalf("LoadCursor mismatch: %+v", got)
+	}
+	if got.UpdatedAt == "" {
+		t.Fatalf("expected updated_at to be set")
+	}
+	if err := s.SaveCursor("issues.tail", "cursor-2", "2026-05-20T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.LoadCursor("issues.tail")
+	if got.Cursor != "cursor-2" || got.HighWaterMark != "2026-05-20T00:00:00Z" {
+		t.Fatalf("overwrite: %+v", got)
+	}
+	if err := s.SaveCursor("misc", "x", "y"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.LoadCursor("misc")
+	if got.Cursor != "x" || got.HighWaterMark != "y" {
+		t.Fatalf("bare scope: %+v", got)
+	}
+}
+
+func TestSplitScope(t *testing.T) {
+	cases := []struct {
+		in, wantType, wantID string
+	}{
+		{"issues.tail", "issues", "tail"},
+		{"misc", "misc", "default"},
+		{"a.b.c", "a", "b.c"},
+		{"", "", "default"},
+	}
+	for _, tc := range cases {
+		et, ei := splitScope(tc.in)
+		if et != tc.wantType || ei != tc.wantID {
+			t.Errorf("splitScope(%q) = (%q,%q), want (%q,%q)", tc.in, et, ei, tc.wantType, tc.wantID)
+		}
+	}
+}
+
+func TestOpenReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lincrawl.db")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	r, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer r.Close()
+	if r.Path() != path {
+		t.Fatalf("Path() = %q, want %q", r.Path(), path)
+	}
+	if r.DB() == nil {
+		t.Fatal("DB() returned nil")
+	}
+	if _, err := r.Counts(); err != nil {
+		t.Fatalf("Counts on RO: %v", err)
+	}
+}
+
+func TestOpenRejectsEmptyPath(t *testing.T) {
+	if _, err := Open(""); err == nil {
+		t.Fatal("expected error on empty path")
+	}
+	if _, err := OpenReadOnly(""); err == nil {
+		t.Fatal("expected error on empty path for OpenReadOnly")
+	}
+}
+
+func TestStoreRawBlobDedupes(t *testing.T) {
+	s := mustOpen(t)
+	payload := []byte(`{"foo":"bar"}`)
+	if err := s.StoreRawBlob("issue", "i1", payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreRawBlob("issue", "i1", payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreRawBlob("issue", "i1", nil); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM raw_blobs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("raw_blobs count = %d, want 1", n)
+	}
+}
+
 func TestSnapshotMaterializesFullGraph(t *testing.T) {
 	s := mustOpen(t)
 	src := linear.Snapshot{
@@ -266,6 +376,137 @@ func TestSnapshotMaterializesFullGraph(t *testing.T) {
 	}
 	if len(got.Issues[0].Comments) != 1 || got.Issues[0].Comments[0].ID != "c1" {
 		t.Fatalf("comments lost: %+v", got.Issues[0].Comments)
+	}
+}
+
+func TestIngestSnapshotIdempotentSecondPassSkips(t *testing.T) {
+	s := mustOpen(t)
+	snap := linear.Snapshot{
+		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Issues: []linear.Issue{
+			{
+				ID: "i1", Identifier: "LIN-1", Title: "Hello", Description: "World",
+				TeamID: "t1", StateID: "s1", Priority: 2,
+				CreatedAt: "2026-05-18T00:00:00Z", UpdatedAt: "2026-05-18T00:00:00Z",
+			},
+		},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	// Second pass with identical content should hit the hash-skip branch.
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Show("LIN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Title != "Hello" {
+		t.Fatal("title lost")
+	}
+}
+
+func TestIngestSnapshotStubsMissingRefs(t *testing.T) {
+	s := mustOpen(t)
+	// Reference a team/state/project that does not exist in the snapshot
+	// to exercise stubMissingRefs.
+	snap := linear.Snapshot{
+		Issues: []linear.Issue{
+			{
+				ID: "i1", Identifier: "LIN-1", Title: "x", TeamID: "ghost-t", ProjectID: "ghost-p", StateID: "ghost-s",
+				CreatedAt: "2026-05-18T00:00:00Z", UpdatedAt: "2026-05-18T00:00:00Z",
+			},
+		},
+	}
+	if err := s.IngestSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotEmptyDB(t *testing.T) {
+	s := mustOpen(t)
+	snap, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Teams) != 0 || len(snap.Issues) != 0 {
+		t.Fatalf("expected empty: %+v", snap)
+	}
+}
+
+func TestExportNDJSONEmptyDB(t *testing.T) {
+	s := mustOpen(t)
+	var buf bytes.Buffer
+	n, err := s.ExportNDJSON(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("empty export count = %d", n)
+	}
+}
+
+func TestIngestStreamRejectsEmpty(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.IngestStream(bytes.NewReader(nil), 0); err == nil {
+		t.Fatal("expected empty-input error")
+	}
+}
+
+func TestIngestStreamRejectsNonObject(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.IngestStream(bytes.NewReader([]byte(`[1,2,3]`)), 0); err == nil {
+		t.Fatal("expected error on non-object top-level")
+	}
+}
+
+func TestIngestStreamRejectsUnknownKind(t *testing.T) {
+	s := mustOpen(t)
+	envelope := `{"kind":"alien","item":{}}`
+	if _, err := s.IngestStream(bytes.NewReader([]byte(envelope)), 0); err == nil {
+		t.Fatal("expected unknown-kind error")
+	}
+}
+
+func TestIngestStreamMultipleEnvelopes(t *testing.T) {
+	s := mustOpen(t)
+	stream := `{"kind":"team","item":{"id":"t1","key":"LIN","name":"L"}}
+{"kind":"state","item":{"id":"s1","team_id":"t1","name":"B","type":"backlog"}}
+{"kind":"user","item":{"id":"u1","name":"X","email":""}}
+{"kind":"label","item":{"id":"l1","team_id":"t1","name":"a"}}
+{"kind":"project","item":{"id":"p1","name":"P","state":"active","updated_at":""}}
+{"kind":"issue","item":{"id":"i1","identifier":"LIN-1","title":"T","description":"","priority":0,"team_id":"t1","state_id":"s1","createdAt":"2026-05-19T00:00:00Z","updatedAt":"2026-05-19T00:00:00Z"}}`
+	if _, err := s.IngestStream(bytes.NewReader([]byte(stream)), 0); err != nil {
+		t.Fatal(err)
+	}
+	counts, _ := s.Counts()
+	if counts.Teams != 1 || counts.Issues != 1 || counts.Labels != 1 {
+		t.Fatalf("counts: %+v", counts)
+	}
+}
+
+func TestIngestStreamMalformedItem(t *testing.T) {
+	s := mustOpen(t)
+	// Properly-typed envelope but item is the wrong shape.
+	stream := `{"kind":"team","item":"not-an-object"}`
+	if _, err := s.IngestStream(bytes.NewReader([]byte(stream)), 0); err == nil {
+		t.Fatal("expected unmarshal error on malformed item")
+	}
+}
+
+func TestSafeSnippetCovers(t *testing.T) {
+	if SafeSnippet("", 200) != "" {
+		t.Error("empty snippet should be empty")
+	}
+	long := strings.Repeat("x", 5_000)
+	got := SafeSnippet(long, 200)
+	if len(got) >= len(long) {
+		t.Errorf("expected truncation, got len=%d", len(got))
+	}
+	if !strings.Contains(SafeSnippet("hi <mark>there</mark> friend", 200), "there") {
+		t.Error("expected mark tags to be stripped while preserving text")
 	}
 }
 

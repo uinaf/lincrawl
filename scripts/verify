@@ -18,12 +18,27 @@ if ! diff -u "$before_tidy" "$after_tidy"; then
 fi
 
 go test -count=1 -coverprofile="$coverage_out" ./...
-total="$(go tool cover -func="$coverage_out" | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')"
+
+# cmd/lincrawl is a thin main() shim that just dispatches to internal/cli.Run;
+# it cannot be exercised in-process, so filter it before computing the gate.
+filtered_out="$(mktemp)"
+trap 'rm -f "$before_tidy" "$after_tidy" "$coverage_out" "$filtered_out"' EXIT
+grep -v 'cmd/lincrawl/main.go' "$coverage_out" >"$filtered_out"
+
+total="$(go tool cover -func="$filtered_out" | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')"
 if [[ -z "$total" ]]; then
   echo "coverage profile produced no total; refusing to report" >&2
   exit 1
 fi
 printf 'coverage %.1f%%\n' "$total"
+
+min_coverage="${LINCRAWL_MIN_COVERAGE:-80.0}"
+if awk -v t="$total" -v m="$min_coverage" 'BEGIN { exit (t+0 < m+0) ? 0 : 1 }'; then
+  echo "coverage ${total}% is below the ${min_coverage}% gate (set LINCRAWL_MIN_COVERAGE to override)" >&2
+  echo "lowest-coverage symbols:" >&2
+  go tool cover -func="$filtered_out" | awk '$3+0 < 80.0 && $3 != "0.0%" { print "  " $0 }' | head -10 >&2
+  exit 1
+fi
 
 go vet ./...
 go test -count=1 -race ./...
