@@ -43,7 +43,9 @@ type Record struct {
 	CreatorID     string   `json:"creator_id,omitempty"`
 	AuthorID      string   `json:"author_id,omitempty"`
 	IssueID       string   `json:"issue_id,omitempty"`
-	Priority      int      `json:"priority,omitempty"`
+	// Priority is serialized without omitempty so 0 ("No priority" in
+	// Linear) is preserved on the wire.
+	Priority      int      `json:"priority"`
 	LabelIDs      []string `json:"label_ids,omitempty"`
 	CreatedAt     string   `json:"created_at,omitempty"`
 	UpdatedAt     string   `json:"updated_at,omitempty"`
@@ -258,8 +260,10 @@ func ReadJSONL(r io.Reader) ([]Record, error) {
 
 // WriteEncryptedJSONL streams records as JSONL through zstd compression
 // and age encryption to path. The output file is created with O_EXCL|0o600
-// so existing artifacts are never silently clobbered.
-func WriteEncryptedJSONL(path, recipientText string, records []Record) error {
+// so existing artifacts are never silently clobbered. On any error after
+// the file is opened the partial artifact is removed so a retry with
+// the same --out path succeeds.
+func WriteEncryptedJSONL(path, recipientText string, records []Record) (retErr error) {
 	recipient, err := ParseRecipient(recipientText)
 	if err != nil {
 		return err
@@ -268,28 +272,46 @@ func WriteEncryptedJSONL(path, recipientText string, records []Record) error {
 	if err != nil {
 		return fmt.Errorf("create archive: %w", err)
 	}
-	defer file.Close()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(path)
+		}
+	}()
 	ageWriter, err := age.Encrypt(file, recipient)
 	if err != nil {
+		_ = file.Close()
 		return fmt.Errorf("create age writer: %w", err)
 	}
 	zstdWriter, err := zstd.NewWriter(ageWriter)
 	if err != nil {
 		_ = ageWriter.Close()
+		_ = file.Close()
 		return fmt.Errorf("create zstd writer: %w", err)
 	}
 	if err := WriteJSONL(zstdWriter, records); err != nil {
 		_ = zstdWriter.Close()
 		_ = ageWriter.Close()
+		_ = file.Close()
 		return err
 	}
 	if err := zstdWriter.Close(); err != nil {
 		_ = ageWriter.Close()
+		_ = file.Close()
 		return fmt.Errorf("close zstd writer: %w", err)
 	}
 	if err := ageWriter.Close(); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("close age writer: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync archive: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close archive: %w", err)
+	}
+	cleanup = false
 	return nil
 }
 

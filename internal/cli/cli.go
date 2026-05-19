@@ -1198,24 +1198,33 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 	}
 	defer s.Close()
 	totalRecords := 0
-	for _, snap := range snaps {
+	ingested := 0
+	for i, snap := range snaps {
 		records, err := archive.ReadEncryptedJSONL(snap.FullPath, identity)
 		if err != nil {
-			return wrapErr(err, "internal", ExitInternal)
+			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: decrypt: %w",
+				i+1, len(snaps), snap.Path, err), "internal", ExitInternal)
 		}
 		fragment, err := archive.RecordsSnapshot(records)
 		if err != nil {
-			return wrapErr(err, "validation", ExitValidation)
+			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: parse: %w",
+				i+1, len(snaps), snap.Path, err), "validation", ExitValidation)
 		}
 		if err := s.IngestSnapshot(fragment); err != nil {
-			return wrapErr(err, "internal", ExitInternal)
+			return wrapErr(fmt.Errorf("subscribe: snapshot %d/%d %s: ingest (already-applied: %d): %w",
+				i+1, len(snaps), snap.Path, ingested, err), "internal", ExitInternal)
 		}
 		totalRecords += len(records)
+		ingested++
 	}
-	counts, _ := s.Counts()
+	counts, err := s.Counts()
+	if err != nil {
+		return wrapErr(err, "internal", ExitInternal)
+	}
 	return writeJSON(cc.stdout, map[string]any{
 		"store":     rootAbs,
 		"snapshots": len(snaps),
+		"ingested":  ingested,
 		"records":   totalRecords,
 		"counts":    counts,
 	})

@@ -16,9 +16,14 @@ import (
 
 const ManifestName = "manifest.json"
 
-// Manifest is the on-disk store manifest. Schema versions are open-ended
-// to allow per-tenant extensions; we accept any value starting with
-// `lincrawl.store.` or matching common sibling shapes.
+// AcceptedSchemaVersions is the allowlist of manifest schema versions
+// this binary understands. Verify rejects everything else.
+var AcceptedSchemaVersions = []string{
+	"lincrawl.store.v1",
+	"putio.lincrawl.store.v1",
+}
+
+// Manifest is the on-disk store manifest.
 type Manifest struct {
 	SchemaVersion              string     `json:"schema_version"`
 	OverlapSeconds             int        `json:"overlap_seconds,omitempty"`
@@ -92,6 +97,16 @@ func Verify(root string) (Result, error) {
 		return res, fmt.Errorf("decode manifest: %w", err)
 	}
 	res.Manifest = &manifest
+
+	if !schemaVersionAccepted(manifest.SchemaVersion) {
+		res.OK = false
+		res.Findings = append(res.Findings, fmt.Sprintf("manifest schema_version %q is not in the accepted set %v",
+			manifest.SchemaVersion, AcceptedSchemaVersions))
+	}
+
+	if len(manifest.Snapshots) == 0 {
+		res.Findings = append(res.Findings, "manifest has zero snapshots; nothing to subscribe to yet")
+	}
 
 	// Snapshot path checks.
 	seen := map[string]bool{}
@@ -289,6 +304,15 @@ func isMonth(s string) bool {
 func isGitCheckout(root string) bool {
 	_, err := os.Stat(filepath.Join(root, ".git"))
 	return err == nil
+}
+
+func schemaVersionAccepted(v string) bool {
+	for _, ok := range AcceptedSchemaVersions {
+		if v == ok {
+			return true
+		}
+	}
+	return false
 }
 
 // SuggestSnapshotPath returns the canonical artifacts/snapshots/<kind>/
