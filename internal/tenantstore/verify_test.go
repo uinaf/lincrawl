@@ -100,7 +100,7 @@ func TestIsMonthEdges(t *testing.T) {
 	if !isMonth("01") || !isMonth("12") {
 		t.Error("valid months rejected")
 	}
-	if isMonth("1") || isMonth("aa") {
+	if isMonth("00") || isMonth("1") || isMonth("13") || isMonth("19") || isMonth("aa") {
 		t.Error("invalid months accepted")
 	}
 }
@@ -146,8 +146,8 @@ func TestVerifyAcceptsListedSchemaVersions(t *testing.T) {
 			t.Fatalf("%s should be accepted: %v", v, res.Findings)
 		}
 	}
-	if got := len(AcceptedSchemaVersions); got != 2 {
-		t.Fatalf("AcceptedSchemaVersions = %d, want 2 (lincrawl.store.v1 + putio.lincrawl.store.v1)", got)
+	if got := len(AcceptedSchemaVersions); got != 1 {
+		t.Fatalf("AcceptedSchemaVersions = %d, want 1 (lincrawl.store.v1)", got)
 	}
 }
 

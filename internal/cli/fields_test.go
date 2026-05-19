@@ -75,3 +75,13 @@ func TestProjectListItemsKnownKeysAggregated(t *testing.T) {
 		t.Fatalf("row 1 should retain c: %v", second)
 	}
 }
+
+func TestProjectListItemsWithKnownRejectsUnknownOnEmptyRows(t *testing.T) {
+	_, err := projectListItemsWithKnown(nil, "id,bogus", []string{"id", "title"})
+	if err == nil {
+		t.Fatal("expected unknown-field error")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("error should mention bogus: %v", err)
+	}
+}

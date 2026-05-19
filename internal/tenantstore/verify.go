@@ -20,7 +20,6 @@ const ManifestName = "manifest.json"
 // this binary understands. Verify rejects everything else.
 var AcceptedSchemaVersions = []string{
 	"lincrawl.store.v1",
-	"putio.lincrawl.store.v1",
 }
 
 // Manifest is the on-disk store manifest.
@@ -277,13 +276,7 @@ func isMonth(s string) bool {
 	if len(s) != 2 {
 		return false
 	}
-	if s[0] < '0' || s[0] > '1' {
-		return false
-	}
-	if s[1] < '0' || s[1] > '9' {
-		return false
-	}
-	return true
+	return s >= "01" && s <= "12"
 }
 
 func isGitCheckout(root string) bool {

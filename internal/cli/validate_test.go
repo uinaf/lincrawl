@@ -91,3 +91,29 @@ func TestValidateOutputPathRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal("expected sandbox error on symlink escape")
 	}
 }
+
+func TestValidateOutputPathRejectsFinalSymlink(t *testing.T) {
+	cwd := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	target := filepath.Join(cwd, "out.jsonl")
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skip("symlink unsupported:", err)
+	}
+	if _, err := validateOutputPath("out.jsonl", cwd); err == nil {
+		t.Fatal("expected error for final-component symlink")
+	}
+}
+
+func TestValidateSandboxedInputPathRejectsFinalSymlinkEscape(t *testing.T) {
+	cwd := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "query.graphql")
+	if err := os.WriteFile(outside, []byte("{ viewer { id } }"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(cwd, "query.graphql")); err != nil {
+		t.Skip("symlink unsupported:", err)
+	}
+	if _, err := validateSandboxedInputPath("--graphql-file", "query.graphql", cwd); err == nil {
+		t.Fatal("expected sandbox error on final-component symlink escape")
+	}
+}

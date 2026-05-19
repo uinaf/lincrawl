@@ -478,10 +478,10 @@ type doctorResult struct {
 func (c *doctorCmd) Run(cc commandContext) error {
 	rt, err := config.LoadRuntime()
 	if err != nil {
-		return err
+		return wrapErr(err, "config", ExitConfig)
 	}
 	if err := config.EnsureDirs(rt); err != nil {
-		return err
+		return wrapErr(err, "config", ExitConfig)
 	}
 	res := doctorResult{
 		OK:             true,
@@ -835,6 +835,18 @@ type searchCmd struct {
 	NDJSON bool   `help:"Emit newline-delimited JSON instead of a JSON array."`
 }
 
+var searchResultFields = []string{
+	"id",
+	"identifier",
+	"title",
+	"team_key",
+	"state_name",
+	"state_type",
+	"updated_at",
+	"snippet",
+	"score",
+}
+
 func (c *searchCmd) Run(cc commandContext) error {
 	cleaned, err := validateQueryString(c.Query)
 	if err != nil {
@@ -866,7 +878,7 @@ func (c *searchCmd) Run(cc commandContext) error {
 				return err
 			}
 			if c.Fields != "" {
-				rows, err := projectListItems([]json.RawMessage{raw}, c.Fields)
+				rows, err := projectListItemsWithKnown([]json.RawMessage{raw}, c.Fields, searchResultFields)
 				if err != nil {
 					return err
 				}
@@ -899,7 +911,7 @@ func (c *searchCmd) Run(cc commandContext) error {
 			}
 			rawItems = append(rawItems, b)
 		}
-		projected, err := projectListItems(rawItems, c.Fields)
+		projected, err := projectListItemsWithKnown(rawItems, c.Fields, searchResultFields)
 		if err != nil {
 			return err
 		}
@@ -1327,7 +1339,7 @@ func (c *queryCmd) Run(cc commandContext) error {
 		if err != nil {
 			return wrapErr(err, "internal", ExitInternal)
 		}
-		abs, err := validateOutputPath(c.GraphqlFile, cwd)
+		abs, err := validateSandboxedInputPath("--graphql-file", c.GraphqlFile, cwd)
 		if err != nil {
 			return err
 		}

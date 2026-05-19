@@ -60,6 +60,10 @@ func projectFields(v any, keep string) ([]byte, error) {
 // Known keys are the UNION across all rows so a sparse row does not flag
 // a legitimate key as unknown.
 func projectListItems(items []json.RawMessage, keep string) ([]json.RawMessage, error) {
+	return projectListItemsWithKnown(items, keep, nil)
+}
+
+func projectListItemsWithKnown(items []json.RawMessage, keep string, knownFields []string) ([]json.RawMessage, error) {
 	keep = strings.TrimSpace(keep)
 	if keep == "" {
 		return items, nil
@@ -73,6 +77,11 @@ func projectListItems(items []json.RawMessage, keep string) ([]json.RawMessage, 
 	}
 	parsed := make([]map[string]json.RawMessage, len(items))
 	union := map[string]struct{}{}
+	for _, k := range knownFields {
+		if k != "" {
+			union[k] = struct{}{}
+		}
+	}
 	for i, raw := range items {
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -83,7 +92,7 @@ func projectListItems(items []json.RawMessage, keep string) ([]json.RawMessage, 
 			union[k] = struct{}{}
 		}
 	}
-	if len(items) > 0 {
+	if len(union) > 0 {
 		var unknown []string
 		for k := range wanted {
 			if _, ok := union[k]; !ok {

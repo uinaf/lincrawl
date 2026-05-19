@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -65,6 +66,34 @@ func validateOutputPath(in, cwd string) (string, error) {
 	resolved := filepath.Join(parentReal, filepath.Base(abs))
 	if !pathInside(resolved, cwdReal) {
 		return "", validationErr(fmt.Sprintf("--out %q escapes the working directory (resolved to %s)", in, resolved))
+	}
+	if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", validationErr(fmt.Sprintf("--out %q must not be a symlink", in))
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", validationErr(fmt.Sprintf("--out %q: %v", in, err))
+	}
+	return resolved, nil
+}
+
+func validateSandboxedInputPath(flag, in, cwd string) (string, error) {
+	abs, err := validateInputPath(in, cwd)
+	if err != nil {
+		return "", err
+	}
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", err
+	}
+	cwdReal, err := filepath.EvalSymlinks(cwdAbs)
+	if err != nil {
+		cwdReal = cwdAbs
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", validationErr(fmt.Sprintf("%s %q: %v", flag, in, err))
+	}
+	if !pathInside(resolved, cwdReal) {
+		return "", validationErr(fmt.Sprintf("%s %q escapes the working directory (resolved to %s)", flag, in, resolved))
 	}
 	return resolved, nil
 }
