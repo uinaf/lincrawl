@@ -62,6 +62,11 @@ JSON by default everywhere. Errors are JSON envelopes on stderr.
 | `show <id-or-identifier>` | Resolve one issue by UUID or `TEAM-N`; supports `--fields` |
 | `query --graphql … --vars …` | Pass-through to the Linear GraphQL API for raw queries |
 | `export --out <path>` | Canonical NDJSON dump of the local archive; `--out` is sandboxed to CWD |
+| `archive --fixture … --recipient … --out …` | Encrypt a fixture directory as an `*.jsonl.zst.age` snapshot |
+| `publish --recipient … --out …` | Encrypt the entire local archive as a publishable snapshot |
+| `import --in … --identity …` | Decrypt + ingest a `*.jsonl.zst.age` snapshot into the local archive |
+| `store verify <path>` | Verify a tenant store's `manifest.json` + canonical artifact layout |
+| `subscribe <path> --identity …` | Verify a tenant store, then ingest every listed snapshot |
 | `guard` | Scan the working tree for tenant leaks, plaintext archives, secrets |
 | `version` | Build version, commit, date |
 
