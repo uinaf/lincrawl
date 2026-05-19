@@ -37,8 +37,10 @@ var (
 	linearUUIDHint = regexp.MustCompile(`"(workspaceId|teamId|issueId|organizationId)"\s*:\s*"[0-9a-fA-F-]{36}"`)
 )
 
-var forbiddenSuffixes = []string{".jsonl", ".jsonl.zst", ".jsonl.zst.age", ".tar", ".tar.zst", ".tar.zst.age", ".db", ".db-wal", ".db-shm", ".sqlite", ".log", ".har"}
-var forbiddenDirs = map[string]bool{"snapshots": true, "reports": true, "screenshots": true, "logs": true, "transcripts": true}
+var (
+	forbiddenSuffixes = []string{".jsonl", ".jsonl.zst", ".jsonl.zst.age", ".tar", ".tar.zst", ".tar.zst.age", ".db", ".db-wal", ".db-shm", ".sqlite", ".log", ".har"}
+	forbiddenDirs     = map[string]bool{"snapshots": true, "reports": true, "screenshots": true, "logs": true, "transcripts": true}
+)
 
 const maxScanBytes = 2 << 20 // 2 MiB
 

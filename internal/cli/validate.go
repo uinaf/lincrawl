@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-
 var (
 	identifierRE  = regexp.MustCompile(`^[A-Z0-9]{1,16}-[0-9]{1,9}$`)
 	uuidRE        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

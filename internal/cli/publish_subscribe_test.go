@@ -14,12 +14,12 @@ import (
 
 // TestPublishSubscribeRoundTrip exercises the full
 // publish -> store verify -> subscribe loop end-to-end:
-//   1. seed a source archive by syncing testdata/synthetic
-//   2. publish it as an encrypted snapshot under a tenant-store layout
-//   3. write a manifest pointing at that snapshot
-//   4. store verify the tenant tree
-//   5. subscribe into a fresh LINCRAWL_HOME with the matching identity
-//   6. assert dst counts equal src counts
+//  1. seed a source archive by syncing testdata/synthetic
+//  2. publish it as an encrypted snapshot under a tenant-store layout
+//  3. write a manifest pointing at that snapshot
+//  4. store verify the tenant tree
+//  5. subscribe into a fresh LINCRAWL_HOME with the matching identity
+//  6. assert dst counts equal src counts
 func TestPublishSubscribeRoundTrip(t *testing.T) {
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {

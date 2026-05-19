@@ -24,31 +24,31 @@ import (
 const SchemaVersion = "lincrawl.archive.v1"
 
 type Record struct {
-	SchemaVersion string   `json:"schema_version"`
-	RecordType    string   `json:"record_type"`
-	ID            string   `json:"id"`
-	Identifier    string   `json:"identifier,omitempty"`
-	Key           string   `json:"key,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	Email         string   `json:"email,omitempty"`
-	Title         string   `json:"title,omitempty"`
-	Description   string   `json:"description,omitempty"`
-	Body          string   `json:"body,omitempty"`
-	State         string   `json:"state,omitempty"`
-	Type          string   `json:"type,omitempty"`
-	TeamID        string   `json:"team_id,omitempty"`
-	ProjectID     string   `json:"project_id,omitempty"`
-	StateID       string   `json:"state_id,omitempty"`
-	AssigneeID    string   `json:"assignee_id,omitempty"`
-	CreatorID     string   `json:"creator_id,omitempty"`
-	AuthorID      string   `json:"author_id,omitempty"`
-	IssueID       string   `json:"issue_id,omitempty"`
+	SchemaVersion string `json:"schema_version"`
+	RecordType    string `json:"record_type"`
+	ID            string `json:"id"`
+	Identifier    string `json:"identifier,omitempty"`
+	Key           string `json:"key,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Email         string `json:"email,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Description   string `json:"description,omitempty"`
+	Body          string `json:"body,omitempty"`
+	State         string `json:"state,omitempty"`
+	Type          string `json:"type,omitempty"`
+	TeamID        string `json:"team_id,omitempty"`
+	ProjectID     string `json:"project_id,omitempty"`
+	StateID       string `json:"state_id,omitempty"`
+	AssigneeID    string `json:"assignee_id,omitempty"`
+	CreatorID     string `json:"creator_id,omitempty"`
+	AuthorID      string `json:"author_id,omitempty"`
+	IssueID       string `json:"issue_id,omitempty"`
 	// Priority is serialized without omitempty so 0 ("No priority" in
 	// Linear) is preserved on the wire.
-	Priority      int      `json:"priority"`
-	LabelIDs      []string `json:"label_ids,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
-	UpdatedAt     string   `json:"updated_at,omitempty"`
+	Priority  int      `json:"priority"`
+	LabelIDs  []string `json:"label_ids,omitempty"`
+	CreatedAt string   `json:"created_at,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
 // SnapshotRecords converts a linear.Snapshot into the canonical, sorted

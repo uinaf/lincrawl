@@ -15,10 +15,10 @@ import (
 
 // Team is the minimal Linear team shape lincrawl mirrors locally.
 type Team struct {
-	ID         string `json:"id"`
-	Key        string `json:"key"`
-	Name       string `json:"name"`
-	UpdatedAt  string `json:"updated_at"`
+	ID        string `json:"id"`
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // WorkflowState matches Linear's state.type vocabulary (`triage`, `backlog`,

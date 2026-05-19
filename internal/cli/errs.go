@@ -30,12 +30,15 @@ func (e *CLIError) Unwrap() error { return e.Wrapped }
 func usageErr(msg string) error {
 	return &CLIError{Code: "usage", ExitVal: ExitUsage, Message: msg}
 }
+
 func validationErr(msg string) error {
 	return &CLIError{Code: "validation", ExitVal: ExitValidation, Message: msg}
 }
+
 func notFoundErr(msg string) error {
 	return &CLIError{Code: "not_found", ExitVal: ExitNotFound, Message: msg}
 }
+
 func configErr(msg string) error {
 	return &CLIError{Code: "config", ExitVal: ExitConfig, Message: msg}
 }

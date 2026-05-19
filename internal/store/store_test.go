@@ -32,8 +32,8 @@ func TestIngestAndSearchRoundTrip(t *testing.T) {
 				ID: "issue-1", Identifier: "LIN-1", Title: "Crawl GraphQL ingest path",
 				Description: "Need to ingest the cursor-paginated issues query.",
 				TeamID:      "team-1", StateID: "state-1", AssigneeID: "user-1",
-				LabelIDs:    []string{"label-1"},
-				UpdatedAt:   "2026-05-18T10:00:00Z", CreatedAt: "2026-05-18T09:00:00Z",
+				LabelIDs:  []string{"label-1"},
+				UpdatedAt: "2026-05-18T10:00:00Z", CreatedAt: "2026-05-18T09:00:00Z",
 				Comments: []linear.Comment{
 					{ID: "c1", IssueID: "issue-1", AuthorID: "user-1", Body: "Looks straightforward.", CreatedAt: "2026-05-18T09:30:00Z", UpdatedAt: "2026-05-18T09:30:00Z"},
 				},
@@ -157,10 +157,10 @@ func TestExportThenIngestStreamRoundTrip(t *testing.T) {
 	src := mustOpen(t)
 	dst := mustOpen(t)
 	snap := linear.Snapshot{
-		Teams:  []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
-		States: []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
-		Users:  []linear.User{{ID: "u1", Name: "Sam"}},
-		Labels: []linear.Label{{ID: "l1", TeamID: "t1", Name: "alpha"}},
+		Teams:    []linear.Team{{ID: "t1", Key: "LIN", Name: "L"}},
+		States:   []linear.WorkflowState{{ID: "s1", TeamID: "t1", Name: "B", Type: "backlog"}},
+		Users:    []linear.User{{ID: "u1", Name: "Sam"}},
+		Labels:   []linear.Label{{ID: "l1", TeamID: "t1", Name: "alpha"}},
 		Projects: []linear.Project{{ID: "p1", Name: "Proj", State: "active", UpdatedAt: "2026-05-19T00:00:00Z"}},
 		Issues: []linear.Issue{{
 			ID: "i1", Identifier: "LIN-1", Title: "T", TeamID: "t1", StateID: "s1", AssigneeID: "u1",
@@ -239,8 +239,10 @@ func TestSnapshotMaterializesFullGraph(t *testing.T) {
 				ProjectID: "p1", AssigneeID: "u1", LabelIDs: []string{"l1"}, Priority: 0,
 				CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:01Z",
 				Comments: []linear.Comment{
-					{ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "hi",
-						CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z"},
+					{
+						ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "hi",
+						CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z",
+					},
 				},
 			},
 		},

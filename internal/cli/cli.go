@@ -161,8 +161,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-type kongExit int
-type errParserExit struct{ code int }
+type (
+	kongExit      int
+	errParserExit struct{ code int }
+)
 
 func (e errParserExit) Error() string { return fmt.Sprintf("parser exit %d", e.code) }
 
@@ -459,17 +461,17 @@ type doctorCmd struct {
 }
 
 type doctorResult struct {
-	OK             bool   `json:"ok"`
-	Offline        bool   `json:"offline"`
-	Home           string `json:"home"`
-	DatabasePath   string `json:"database_path"`
-	ConfigDir      string `json:"config_dir"`
-	DotEnvPath     string `json:"dotenv_path"`
-	DotEnvLoaded   bool   `json:"dotenv_loaded"`
-	LinearAPIBase  string `json:"linear_api_base"`
-	LinearAPIToken string `json:"linear_api_token"`
-	AgeRecipient   string `json:"age_recipient"`
-	AgeIdentity    string `json:"age_identity"`
+	OK             bool     `json:"ok"`
+	Offline        bool     `json:"offline"`
+	Home           string   `json:"home"`
+	DatabasePath   string   `json:"database_path"`
+	ConfigDir      string   `json:"config_dir"`
+	DotEnvPath     string   `json:"dotenv_path"`
+	DotEnvLoaded   bool     `json:"dotenv_loaded"`
+	LinearAPIBase  string   `json:"linear_api_base"`
+	LinearAPIToken string   `json:"linear_api_token"`
+	AgeRecipient   string   `json:"age_recipient"`
+	AgeIdentity    string   `json:"age_identity"`
 	Notes          []string `json:"notes,omitempty"`
 }
 
@@ -512,11 +514,11 @@ type statusCmd struct {
 }
 
 type statusResult struct {
-	Home         string         `json:"home"`
-	DatabasePath string         `json:"database_path"`
-	Exists       bool           `json:"exists"`
-	Counts       store.Counts   `json:"counts"`
-	Resume       *resumeStatus  `json:"resume,omitempty"`
+	Home         string        `json:"home"`
+	DatabasePath string        `json:"database_path"`
+	Exists       bool          `json:"exists"`
+	Counts       store.Counts  `json:"counts"`
+	Resume       *resumeStatus `json:"resume,omitempty"`
 }
 
 type resumeStatus struct {
@@ -966,7 +968,7 @@ func resolveIdentity(flag string) (string, error) {
 		return v, nil
 	}
 	if path := strings.TrimSpace(os.Getenv("LINCRAWL_AGE_IDENTITY_FILE")); path != "" {
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) // #nosec G304 G703 -- operator-supplied identity path outside any sandbox
 		if err != nil {
 			return "", wrapErr(err, "config", ExitConfig)
 		}
@@ -1261,14 +1263,14 @@ func (c *subscribeCmd) Run(cc commandContext) error {
 }
 
 type subscribeResult struct {
-	Mode         string                       `json:"mode"`
-	Store        string                       `json:"store"`
-	Snapshots    int                          `json:"snapshots"`
-	Ingested     int                          `json:"ingested,omitempty"`
-	Records      int                          `json:"records,omitempty"`
-	Counts       store.Counts                 `json:"counts,omitempty"`
+	Mode         string                         `json:"mode"`
+	Store        string                         `json:"store"`
+	Snapshots    int                            `json:"snapshots"`
+	Ingested     int                            `json:"ingested,omitempty"`
+	Records      int                            `json:"records,omitempty"`
+	Counts       store.Counts                   `json:"counts,omitempty"`
 	SnapshotPlan []tenantstore.VerifiedSnapshot `json:"snapshot_plan,omitempty"`
-	DryRun       bool                         `json:"dry_run,omitempty"`
+	DryRun       bool                           `json:"dry_run,omitempty"`
 }
 
 func snapshotCounts(snap linear.Snapshot) map[string]int {

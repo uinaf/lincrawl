@@ -25,20 +25,20 @@ var AcceptedSchemaVersions = []string{
 
 // Manifest is the on-disk store manifest.
 type Manifest struct {
-	SchemaVersion              string     `json:"schema_version"`
-	OverlapSeconds             int        `json:"overlap_seconds,omitempty"`
-	LastSuccessfulHighWaterMark string    `json:"last_successful_high_water_mark,omitempty"`
-	Snapshots                  []Snapshot `json:"snapshots"`
+	SchemaVersion               string     `json:"schema_version"`
+	OverlapSeconds              int        `json:"overlap_seconds,omitempty"`
+	LastSuccessfulHighWaterMark string     `json:"last_successful_high_water_mark,omitempty"`
+	Snapshots                   []Snapshot `json:"snapshots"`
 }
 
 type Snapshot struct {
-	Kind            string `json:"kind"`
-	Path            string `json:"path"`
-	SHA256          string `json:"sha256,omitempty"`
-	Bytes           int64  `json:"bytes,omitempty"`
-	Records         int    `json:"records,omitempty"`
-	CreatedAt       string `json:"created_at,omitempty"`
-	HighWaterMark   string `json:"high_water_mark,omitempty"`
+	Kind          string `json:"kind"`
+	Path          string `json:"path"`
+	SHA256        string `json:"sha256,omitempty"`
+	Bytes         int64  `json:"bytes,omitempty"`
+	Records       int    `json:"records,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	HighWaterMark string `json:"high_water_mark,omitempty"`
 }
 
 type Result struct {
@@ -53,22 +53,7 @@ var (
 	allowedExtensions = []string{".jsonl.zst.age", ".tar.zst.age"}
 	forbiddenSuffixes = []string{".jsonl", ".jsonl.zst", ".tar", ".tar.zst", ".log", ".har", ".db", ".db-wal", ".db-shm", ".sqlite"}
 	forbiddenDirs     = map[string]bool{"logs": true, "reports": true, "screenshots": true, "transcripts": true}
-	allowedRootEntries = map[string]bool{
-		ManifestName: true,
-		"artifacts":  true,
-		"docs":       true,
-		"scripts":    true,
-		"README.md":  true,
-		"LICENSE":    true,
-		"SECURITY.md": true,
-		"CONTRIBUTING.md": true,
-		"AGENTS.md":  true,
-		"CLAUDE.md":  true,
-		".gitignore": true,
-		".env.example": true,
-		".env.local.example": true,
-	}
-	ignoredScratch = map[string]bool{"state": true, "tmp": true, ".git": true}
+	ignoredScratch    = map[string]bool{"state": true, "tmp": true, ".git": true}
 )
 
 // Verify reads manifest.json from root, validates that every listed

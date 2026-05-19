@@ -6,22 +6,31 @@ cd "$repo_root"
 
 before_tidy="$(mktemp)"
 after_tidy="$(mktemp)"
-trap 'rm -f "$before_tidy" "$after_tidy"' EXIT
+coverage_out="$(mktemp)"
+trap 'rm -f "$before_tidy" "$after_tidy" "$coverage_out"' EXIT
 
-git diff -- go.mod go.sum >"$before_tidy" || true
+git diff -- go.mod go.sum >"$before_tidy"
 go mod tidy
-git diff -- go.mod go.sum >"$after_tidy" || true
+git diff -- go.mod go.sum >"$after_tidy"
 if ! diff -u "$before_tidy" "$after_tidy"; then
   echo "go mod tidy changed go.mod or go.sum; run go mod tidy and commit the result" >&2
   exit 1
 fi
 
+go test -count=1 -coverprofile="$coverage_out" ./...
+total="$(go tool cover -func="$coverage_out" | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')"
+if [[ -z "$total" ]]; then
+  echo "coverage profile produced no total; refusing to report" >&2
+  exit 1
+fi
+printf 'coverage %.1f%%\n' "$total"
+
 go vet ./...
-go test ./...
-go test -race ./...
+go test -count=1 -race ./...
 ./scripts/smoke
 go run ./cmd/lincrawl guard --json >/dev/null
 ./scripts/release-check
+./scripts/lint
 git diff --check
 
 echo "verify ok"

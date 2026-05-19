@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -157,7 +157,7 @@ func (c *Client) do(ctx context.Context, req gqlRequest, dst any) error {
 			if rl, ok := lastErr.(*RateLimitError); ok && rl.RetryAfter > delay {
 				delay = rl.RetryAfter
 			}
-			delay += time.Duration(rand.Int63n(int64(c.RetryBackoff)))
+			delay += time.Duration(rand.Int64N(int64(c.RetryBackoff))) // #nosec G404 -- backoff jitter, not crypto
 			if err := c.Sleep(ctx, delay); err != nil {
 				return err
 			}

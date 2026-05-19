@@ -31,8 +31,10 @@ func sampleSnapshot() linear.Snapshot {
 				CreatorID: "u1", Priority: 2, LabelIDs: []string{"l1"},
 				CreatedAt: "2026-05-19T00:00:00Z", UpdatedAt: "2026-05-19T00:00:01Z",
 				Comments: []linear.Comment{
-					{ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "first",
-						CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z"},
+					{
+						ID: "c1", IssueID: "i1", AuthorID: "u1", Body: "first",
+						CreatedAt: "2026-05-19T00:00:02Z", UpdatedAt: "2026-05-19T00:00:02Z",
+					},
 				},
 			},
 		},

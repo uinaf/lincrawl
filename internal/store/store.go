@@ -132,15 +132,15 @@ func (s *Store) Counts() (Counts, error) {
 // SearchResult is one hit from the FTS path with enough metadata to render
 // either JSON or NDJSON output without extra round-trips.
 type SearchResult struct {
-	IssueID     string  `json:"id"`
-	Identifier  string  `json:"identifier"`
-	Title       string  `json:"title"`
-	TeamKey     string  `json:"team_key"`
-	StateName   string  `json:"state_name"`
-	StateType   string  `json:"state_type"`
-	UpdatedAt   string  `json:"updated_at"`
-	Snippet     string  `json:"snippet"`
-	Score       float64 `json:"score"`
+	IssueID    string  `json:"id"`
+	Identifier string  `json:"identifier"`
+	Title      string  `json:"title"`
+	TeamKey    string  `json:"team_key"`
+	StateName  string  `json:"state_name"`
+	StateType  string  `json:"state_type"`
+	UpdatedAt  string  `json:"updated_at"`
+	Snippet    string  `json:"snippet"`
+	Score      float64 `json:"score"`
 }
 
 // PhraseQuery wraps user input as an FTS5 phrase so characters that would
@@ -374,10 +374,10 @@ func splitScope(scope string) (entityType, entityID string) {
 }
 
 type SyncState struct {
-	Scope          string `json:"scope"`
-	Cursor         string `json:"cursor"`
-	HighWaterMark  string `json:"high_water_mark"`
-	UpdatedAt      string `json:"updated_at"`
+	Scope         string `json:"scope"`
+	Cursor        string `json:"cursor"`
+	HighWaterMark string `json:"high_water_mark"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 func (s *Store) LoadCursor(scope string) (SyncState, error) {
@@ -513,25 +513,6 @@ func appendEnvelope(snap *linear.Snapshot, raw json.RawMessage, count int) error
 		return fmt.Errorf("ingest: unknown kind %q at envelope %d", env.Kind, count)
 	}
 	return nil
-}
-
-func decodeEnvelopeStream(r io.Reader) (linear.Snapshot, error) {
-	dec := json.NewDecoder(r)
-	var snap linear.Snapshot
-	count := 0
-	for {
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			if err == io.EOF {
-				return snap, nil
-			}
-			return snap, fmt.Errorf("ingest: envelope %d: %w", count+1, err)
-		}
-		count++
-		if err := appendEnvelope(&snap, raw, count); err != nil {
-			return snap, err
-		}
-	}
 }
 
 func ingestAndCount(s *Store, snap linear.Snapshot) (int, error) {
