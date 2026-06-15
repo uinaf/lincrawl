@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.13.0
 	github.com/klauspost/compress v1.18.6
-	github.com/openclaw/crawlkit v0.11.0
+	github.com/openclaw/crawlkit v0.12.0
 	golang.org/x/crypto v0.52.0
 )
 
@@ -22,5 +22,5 @@ require (
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.50.1 // indirect
+	modernc.org/sqlite v1.51.0 // indirect
 )
