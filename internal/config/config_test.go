@@ -188,7 +188,10 @@ func TestLoadRuntimeWithoutLINCRAWLHome(t *testing.T) {
 }
 
 func TestLoadRuntimeHomeOverride(t *testing.T) {
-	dir := t.TempDir()
+	root := t.TempDir()
+	t.Chdir(root)
+	dir := "relative-home"
+	wantHome := filepath.Join(root, dir)
 	t.Setenv("LINCRAWL_HOME", dir)
 	t.Setenv("LINEAR_API_KEY", "secret-but-we-only-check-presence")
 	t.Setenv("LINCRAWL_LINEAR_BASE_URL", "https://example.test/graphql")
@@ -197,8 +200,8 @@ func TestLoadRuntimeHomeOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRuntime: %v", err)
 	}
-	if rt.Home != dir {
-		t.Fatalf("Home = %q, want %q", rt.Home, dir)
+	if rt.Home != wantHome {
+		t.Fatalf("Home = %q, want %q", rt.Home, wantHome)
 	}
 	if rt.LinearAPIBase != "https://example.test/graphql" {
 		t.Fatalf("LinearAPIBase = %q", rt.LinearAPIBase)

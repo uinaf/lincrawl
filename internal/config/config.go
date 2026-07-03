@@ -62,6 +62,11 @@ func LoadRuntime() (Runtime, error) {
 		}
 		home = xdg
 	}
+	absHome, err := filepath.Abs(home)
+	if err != nil {
+		return Runtime{}, err
+	}
+	home = absHome
 	rt.Home = home
 	rt.DatabasePath = filepath.Join(home, "lincrawl.db")
 	rt.ConfigDir = filepath.Join(home, "config")
