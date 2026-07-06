@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.13.0
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.19.0
 	github.com/openclaw/crawlkit v0.13.1
 	golang.org/x/crypto v0.53.0
 )
