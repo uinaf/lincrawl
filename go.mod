@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.13.0
 	github.com/klauspost/compress v1.19.0
-	github.com/openclaw/crawlkit v0.13.2
+	github.com/openclaw/crawlkit v0.13.4
 	golang.org/x/crypto v0.53.0
 )
 
