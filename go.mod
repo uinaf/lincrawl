@@ -1,12 +1,12 @@
 module github.com/uinaf/lincrawl
 
-go 1.26.4
+go 1.26.5
 
 require (
 	filippo.io/age v1.3.1
 	github.com/alecthomas/kong v1.13.0
-	github.com/klauspost/compress v1.18.6
-	github.com/openclaw/crawlkit v0.13.1
+	github.com/klauspost/compress v1.19.0
+	github.com/openclaw/crawlkit v0.13.2
 	golang.org/x/crypto v0.53.0
 )
 
@@ -22,5 +22,5 @@ require (
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.52.0 // indirect
+	modernc.org/sqlite v1.53.0 // indirect
 )
